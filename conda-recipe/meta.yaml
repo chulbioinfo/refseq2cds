@@ -6,7 +6,8 @@ package:
   version: {{ version }}
 
 source:
-  path: ..
+  url: https://github.com/chulbioinfo/refseq2cds/archive/refs/tags/v{{ version }}.tar.gz
+  sha256: 945b7876eb314c5809357bb4067d3934a706641b9d24987b2026a6d7600dd474
 
 build:
   noarch: python

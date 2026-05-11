@@ -629,23 +629,23 @@ This repository includes packaging and reviewer-smoke-test scaffolding:
 
 ```text
 environment.yml              reproducible conda/mamba environment
-conda-recipe/meta.yaml       draft noarch Python conda/Bioconda recipe
+conda-recipe/meta.yaml       noarch Python conda/Bioconda recipe
 .github/workflows/test.yml   GitHub Actions pytest workflow
 examples/mini/               offline mini fixture
 tests/                       pytest tests for CLI and mini matrix logic
 CITATION.cff                 citation metadata
 ```
 
-To test the draft conda recipe locally:
+The v0.1.2 conda recipe is pinned to the GitHub release tarball and SHA256. To
+test it locally:
 
 ```bash
 mamba install -c conda-forge -c bioconda conda-build conda-verify
 conda build conda-recipe
 ```
 
-For a Bioconda submission, replace `source: path: ..` in
-`conda-recipe/meta.yaml` with the GitHub release tarball URL and SHA256 for the
-submitted release.
+For a Bioconda submission, copy `conda-recipe/meta.yaml` into
+`bioconda-recipes/recipes/refseq2cds/meta.yaml`.
 
 Additional notes:
 

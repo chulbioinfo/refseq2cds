@@ -1,7 +1,12 @@
 # Conda Packaging Notes
 
-`refseq2cds` includes a draft conda recipe in `conda-recipe/meta.yaml`.
-This is intended to make a future Bioconda submission easier.
+`refseq2cds` includes a Bioconda-ready recipe in `conda-recipe/meta.yaml`.
+The v0.1.2 recipe is pinned to the GitHub release tarball:
+
+```text
+https://github.com/chulbioinfo/refseq2cds/archive/refs/tags/v0.1.2.tar.gz
+sha256: 945b7876eb314c5809357bb4067d3934a706641b9d24987b2026a6d7600dd474
+```
 
 ## Local conda-build test
 
@@ -17,10 +22,9 @@ Build locally:
 conda build conda-recipe
 ```
 
-For local builds, use a clean clone or remove large generated directories first.
-The committed source distribution excludes `raw/`, `fastas/`, indexes, reports
-and other generated outputs, but a local `source: path: ..` conda build may
-still scan the working tree before packaging.
+The recipe now builds from the release tarball, not from the local working tree,
+so ignored generated directories such as `raw/`, `fastas/`, indexes, reports,
+and matrices are not part of the conda source.
 
 The recipe test runs:
 
@@ -34,16 +38,57 @@ NCBI during conda-build.
 
 ## Bioconda submission checklist
 
-Before opening a Bioconda pull request:
+Before opening a Bioconda pull request, verify:
 
-- create a GitHub release tag, for example `v0.1.2`;
-- upload a source archive or use the GitHub release tarball URL;
-- replace `source: path: ..` with a release `url` and `sha256`;
-- confirm all run dependencies exist on `conda-forge` or `bioconda`;
+- the GitHub `v0.1.2` tag and release exist;
+- `conda-recipe/meta.yaml` has the release tarball URL and SHA256;
+- all run dependencies exist on `conda-forge` or `bioconda`;
 - confirm `refseq2cds test --example mini` passes inside the conda-build test
   environment;
 - keep command-line dependencies (`ncbi-datasets-cli`, `mafft`, `pal2nal`) as
   conda run requirements because they are used by normal workflows.
+
+Dependency channels checked for v0.1.2:
+
+| Package | Channel |
+|---|---|
+| `ncbi-datasets-cli` | `conda-forge` |
+| `mafft` | `bioconda` |
+| `pal2nal` | `bioconda` |
+| Python libraries (`biopython`, `dendropy`, `jinja2`, `networkx`, `pandas`, `pyarrow`) | `conda-forge`/`bioconda` |
+
+## Bioconda PR workflow
+
+Fork and clone the Bioconda recipes repository:
+
+```bash
+git clone https://github.com/<YOUR_GITHUB_USERNAME>/bioconda-recipes.git
+cd bioconda-recipes
+git remote add upstream https://github.com/bioconda/bioconda-recipes.git
+git checkout -b add-refseq2cds
+```
+
+Copy the recipe:
+
+```bash
+mkdir -p recipes/refseq2cds
+cp /Users/openhl/Documents/NCBI_ortholog/conda-recipe/meta.yaml recipes/refseq2cds/meta.yaml
+```
+
+Run local lint/build if you have Bioconda tooling installed:
+
+```bash
+bioconda-utils lint recipes config.yml --packages refseq2cds
+bioconda-utils build recipes config.yml --packages refseq2cds
+```
+
+Then commit, push, and open a pull request:
+
+```bash
+git add recipes/refseq2cds/meta.yaml
+git commit -m "Add refseq2cds"
+git push origin add-refseq2cds
+```
 
 ## Why package data is included
 
