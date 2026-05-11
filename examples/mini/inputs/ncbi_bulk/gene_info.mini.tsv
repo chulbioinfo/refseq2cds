@@ -1,0 +1,16 @@
+#tax_id	GeneID	Symbol	LocusTag	Synonyms	dbXrefs	chromosome	map_location	description	type_of_gene	Symbol_from_nomenclature_authority	Full_name_from_nomenclature_authority	Nomenclature_status	Other_designations	Modification_date	Feature_type
+9606	1001	PASS1	-	-	-	1	-	Mini pass family 1	protein-coding	PASS1	pass family 1	O	-	20260511	-
+9598	2001	PASS1_PT	-	-	-	1	-	Mini pass family 1 chimp	protein-coding	PASS1_PT	pass family 1 chimp	O	-	20260511	-
+9595	3001	PASS1_GG	-	-	-	1	-	Mini pass family 1 gorilla	protein-coding	PASS1_GG	pass family 1 gorilla	O	-	20260511	-
+9606	1002	MISSING1	-	-	-	1	-	Mini missing family	protein-coding	MISSING1	missing family	O	-	20260511	-
+9598	2002	MISSING1_PT	-	-	-	1	-	Mini missing family chimp	protein-coding	MISSING1_PT	missing family chimp	O	-	20260511	-
+9606	1003	PARALOG1	-	-	-	1	-	Mini paralog family	protein-coding	PARALOG1	paralog family	O	-	20260511	-
+9598	2003	PARALOG1_PT	-	-	-	1	-	Mini paralog family chimp	protein-coding	PARALOG1_PT	paralog family chimp	O	-	20260511	-
+9595	3003	PARALOG1_GG	-	-	-	1	-	Mini paralog family gorilla copy 1	protein-coding	PARALOG1_GG	paralog family gorilla	O	-	20260511	-
+9595	3004	PARALOG1_GG2	-	-	-	1	-	Mini paralog family gorilla copy 2	protein-coding	PARALOG1_GG2	paralog family gorilla duplicate	O	-	20260511	-
+9606	1005	STOP1	-	-	-	1	-	Mini internal stop family	protein-coding	STOP1	internal stop family	O	-	20260511	-
+9598	2005	STOP1_PT	-	-	-	1	-	Mini internal stop family chimp	protein-coding	STOP1_PT	internal stop family chimp	O	-	20260511	-
+9595	3005	STOP1_GG	-	-	-	1	-	Mini internal stop family gorilla	protein-coding	STOP1_GG	internal stop family gorilla	O	-	20260511	-
+9606	1006	NEG1	-	-	-	2	-	Mini negative strand family	protein-coding	NEG1	negative strand family	O	-	20260511	-
+9598	2006	NEG1_PT	-	-	-	2	-	Mini negative strand family chimp	protein-coding	NEG1_PT	negative strand family chimp	O	-	20260511	-
+9595	3006	NEG1_GG	-	-	-	2	-	Mini negative strand family gorilla	protein-coding	NEG1_GG	negative strand family gorilla	O	-	20260511	-

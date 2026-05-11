@@ -1,0 +1,11 @@
+#tax_id	GeneID	relationship	Other_tax_id	Other_GeneID
+9606	1001	Ortholog	9598	2001
+9606	1001	Ortholog	9595	3001
+9606	1002	Ortholog	9598	2002
+9606	1003	Ortholog	9598	2003
+9606	1003	Ortholog	9595	3003
+9606	1003	Ortholog	9595	3004
+9606	1005	Ortholog	9598	2005
+9606	1005	Ortholog	9595	3005
+9606	1006	Ortholog	9598	2006
+9606	1006	Ortholog	9595	3006

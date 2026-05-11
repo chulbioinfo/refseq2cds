@@ -33,12 +33,15 @@ from urllib.parse import unquote
 import pandas as pd
 
 
-ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = ROOT / "config" / "species_manifest.tsv"
-SELECTION = ROOT / "selection" / "representative_cds.normalized.parquet"
-FASTA_MANIFEST = ROOT / "fastas" / "manifest.tsv"
-OUTDIR = ROOT / "human_cds_matrices"
-REPORTS = ROOT / "reports"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
+OUTPUT_ROOT = PROJECT_ROOT
+MANIFEST = PROJECT_ROOT / "config" / "species_manifest.tsv"
+RAW_ASSEMBLIES = PROJECT_ROOT / "raw" / "assembly_packages"
+SELECTION = PROJECT_ROOT / "selection" / "representative_cds.normalized.parquet"
+FASTA_MANIFEST = PROJECT_ROOT / "fastas" / "manifest.tsv"
+OUTDIR = PROJECT_ROOT / "human_cds_matrices"
+REPORTS = PROJECT_ROOT / "reports"
 
 GENEID_RE = re.compile(r"GeneID:(\d+)")
 TRANSCRIPT_RE = re.compile(r"\b[NUX][MR]_\d+(?:\.\d+)?\b")
@@ -59,6 +62,33 @@ class CdsFeature:
 
 def log(message: str) -> None:
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {message}", flush=True)
+
+
+def configure_paths(
+    *,
+    manifest: Optional[str] = None,
+    input_root: Optional[str] = None,
+    output_root: Optional[str] = None,
+) -> None:
+    global ROOT, OUTPUT_ROOT, MANIFEST, RAW_ASSEMBLIES, SELECTION, FASTA_MANIFEST, OUTDIR, REPORTS
+    OUTPUT_ROOT = Path(output_root).resolve() if output_root else PROJECT_ROOT
+    ROOT = OUTPUT_ROOT
+    raw_root = Path(input_root).resolve() if input_root else OUTPUT_ROOT / "raw"
+    MANIFEST = Path(manifest).resolve() if manifest else PROJECT_ROOT / "config" / "species_manifest.tsv"
+    RAW_ASSEMBLIES = raw_root / "assembly_packages"
+    SELECTION = OUTPUT_ROOT / "selection" / "representative_cds.normalized.parquet"
+    FASTA_MANIFEST = OUTPUT_ROOT / "fastas" / "manifest.tsv"
+    OUTDIR = OUTPUT_ROOT / "human_cds_matrices"
+    REPORTS = OUTPUT_ROOT / "reports"
+
+
+def rel_path(path: Path) -> str:
+    for base in [OUTPUT_ROOT, PROJECT_ROOT]:
+        try:
+            return str(path.relative_to(base))
+        except ValueError:
+            continue
+    return str(path)
 
 
 def locate_file(package_dir: Path, predicate) -> Path:
@@ -336,15 +366,19 @@ def read_human_manifest_row() -> Dict[str, str]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--manifest", default=str(MANIFEST), help="Species manifest TSV")
+    parser.add_argument("--input-root", help="Input root containing assembly_packages/")
+    parser.add_argument("--output-root", help="Output root containing selection/ and fastas/")
     parser.add_argument("--force", action="store_true", help="Rebuild existing matrix files")
     args = parser.parse_args()
 
+    configure_paths(manifest=args.manifest, input_root=args.input_root, output_root=args.output_root)
     OUTDIR.mkdir(parents=True, exist_ok=True)
     REPORTS.mkdir(parents=True, exist_ok=True)
 
     human_manifest = read_human_manifest_row()
     human_token = human_manifest["token"]
-    human_package = ROOT / "raw" / "assembly_packages" / human_token
+    human_package = RAW_ASSEMBLIES / human_token
 
     gff_path = locate_file(human_package, lambda p: p.name == "genomic.gff" or p.suffix == ".gff3")
     seq_report_path = locate_file(human_package, lambda p: p.name == "sequence_report.jsonl")
@@ -430,7 +464,7 @@ def main() -> None:
                 "reference_token": row.get("reference_token", ""),
                 "transcript_accession": row.get("transcript_accession", ""),
                 "protein_accession": row.get("protein_accession", ""),
-                "matrix_path": str(out_path.relative_to(ROOT)),
+                "matrix_path": rel_path(out_path),
                 "matrix_rows": int(stats["matrix_rows"]),
                 "original_cds_genomic_positions": int(stats["original_cds_genomic_positions"]),
                 "terminal_stop_removed": bool(stats["terminal_stop_removed"]),
@@ -451,9 +485,9 @@ def main() -> None:
         "matrix_files": int(len(manifest_df)),
         "failed": int(len(failures_df)),
         "total_matrix_rows": int(total_rows),
-        "output_dir": str(OUTDIR.relative_to(ROOT)),
-        "gff_path": str(gff_path.relative_to(ROOT)),
-        "sequence_report_path": str(seq_report_path.relative_to(ROOT)),
+        "output_dir": rel_path(OUTDIR),
+        "gff_path": rel_path(gff_path),
+        "sequence_report_path": rel_path(seq_report_path),
         **assembly_meta,
     }
     with (REPORTS / "human_cds_position_matrices.summary.json").open("w") as fh:

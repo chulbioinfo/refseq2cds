@@ -1,0 +1,16 @@
+##gff-version 3
+NC_MINI1.1	RefSeq	gene	100	162	.	+	.	ID=gene-1001;Dbxref=GeneID:1001;Name=PASS1;gene=PASS1;gene_biotype=protein-coding
+NC_MINI1.1	RefSeq	mRNA	100	162	.	+	.	ID=rna-NM_000001.1;Parent=gene-1001;Dbxref=GeneID:1001;transcript_id=NM_000001.1;gene=PASS1;tag=RefSeq Select
+NC_MINI1.1	RefSeq	CDS	100	162	.	+	0	ID=cds-NP_000001.1;Parent=rna-NM_000001.1;Dbxref=GeneID:1001;protein_id=NP_000001.1
+NC_MINI1.1	RefSeq	gene	200	262	.	+	.	ID=gene-1002;Dbxref=GeneID:1002;Name=MISSING1;gene=MISSING1;gene_biotype=protein-coding
+NC_MINI1.1	RefSeq	mRNA	200	262	.	+	.	ID=rna-NM_000002.1;Parent=gene-1002;Dbxref=GeneID:1002;transcript_id=NM_000002.1;gene=MISSING1;tag=RefSeq Select
+NC_MINI1.1	RefSeq	CDS	200	262	.	+	0	ID=cds-NP_000002.1;Parent=rna-NM_000002.1;Dbxref=GeneID:1002;protein_id=NP_000002.1
+NC_MINI1.1	RefSeq	gene	300	362	.	+	.	ID=gene-1003;Dbxref=GeneID:1003;Name=PARALOG1;gene=PARALOG1;gene_biotype=protein-coding
+NC_MINI1.1	RefSeq	mRNA	300	362	.	+	.	ID=rna-NM_000003.1;Parent=gene-1003;Dbxref=GeneID:1003;transcript_id=NM_000003.1;gene=PARALOG1;tag=RefSeq Select
+NC_MINI1.1	RefSeq	CDS	300	362	.	+	0	ID=cds-NP_000003.1;Parent=rna-NM_000003.1;Dbxref=GeneID:1003;protein_id=NP_000003.1
+NC_MINI1.1	RefSeq	gene	400	462	.	+	.	ID=gene-1005;Dbxref=GeneID:1005;Name=STOP1;gene=STOP1;gene_biotype=protein-coding
+NC_MINI1.1	RefSeq	mRNA	400	462	.	+	.	ID=rna-NM_000005.1;Parent=gene-1005;Dbxref=GeneID:1005;transcript_id=NM_000005.1;gene=STOP1;tag=RefSeq Select
+NC_MINI1.1	RefSeq	CDS	400	462	.	+	0	ID=cds-NP_000005.1;Parent=rna-NM_000005.1;Dbxref=GeneID:1005;protein_id=NP_000005.1
+NC_MINI2.1	RefSeq	gene	500	562	.	-	.	ID=gene-1006;Dbxref=GeneID:1006;Name=NEG1;gene=NEG1;gene_biotype=protein-coding
+NC_MINI2.1	RefSeq	mRNA	500	562	.	-	.	ID=rna-NM_000006.1;Parent=gene-1006;Dbxref=GeneID:1006;transcript_id=NM_000006.1;gene=NEG1;tag=RefSeq Select
+NC_MINI2.1	RefSeq	CDS	500	562	.	-	0	ID=cds-NP_000006.1;Parent=rna-NM_000006.1;Dbxref=GeneID:1006;protein_id=NP_000006.1

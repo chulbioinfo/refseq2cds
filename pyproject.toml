@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "refseq2cds"
-version = "0.1.1"
+version = "0.1.2"
 description = "Assembly-exact NCBI RefSeq singleton ortholog CDS FASTA and human CDS-position matrix builder."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [
-  { name = "NCBI_ortholog project" }
+  { name = "Chul Lee", email = "chul.bioinfo@gmail.com" }
 ]
 keywords = [
   "NCBI",
@@ -36,8 +36,64 @@ dependencies = [
   "pyarrow>=15"
 ]
 
+[project.optional-dependencies]
+test = [
+  "pytest>=8"
+]
+dev = [
+  "pytest>=8"
+]
+
 [project.scripts]
 refseq2cds = "refseq2cds:main"
 
 [tool.setuptools]
 py-modules = ["refseq2cds"]
+
+[tool.setuptools.data-files]
+"share/refseq2cds/config" = [
+  "config/species_manifest.tsv"
+]
+"share/refseq2cds/workflow/scripts" = [
+  "workflow/scripts/run_cds_pipeline.py",
+  "workflow/scripts/build_human_cds_position_matrices.py",
+  "workflow/scripts/align_mafft_pal2nal.py"
+]
+"share/refseq2cds/examples/mini" = [
+  "examples/mini/README.md",
+  "examples/mini/manifest.tsv"
+]
+"share/refseq2cds/examples/mini/inputs/ncbi_bulk" = [
+  "examples/mini/inputs/ncbi_bulk/gene_info.mini.tsv",
+  "examples/mini/inputs/ncbi_bulk/gene_orthologs.mini.tsv"
+]
+"share/refseq2cds/examples/mini/inputs/assembly_packages/human" = [
+  "examples/mini/inputs/assembly_packages/human/dataset_catalog.json"
+]
+"share/refseq2cds/examples/mini/inputs/assembly_packages/human/ncbi_dataset/data/GCF_MINI" = [
+  "examples/mini/inputs/assembly_packages/human/ncbi_dataset/data/GCF_MINI/assembly_data_report.jsonl",
+  "examples/mini/inputs/assembly_packages/human/ncbi_dataset/data/GCF_MINI/cds_from_genomic.fna",
+  "examples/mini/inputs/assembly_packages/human/ncbi_dataset/data/GCF_MINI/genomic.gff",
+  "examples/mini/inputs/assembly_packages/human/ncbi_dataset/data/GCF_MINI/protein.faa",
+  "examples/mini/inputs/assembly_packages/human/ncbi_dataset/data/GCF_MINI/sequence_report.jsonl"
+]
+"share/refseq2cds/examples/mini/inputs/assembly_packages/chimpanzee" = [
+  "examples/mini/inputs/assembly_packages/chimpanzee/dataset_catalog.json"
+]
+"share/refseq2cds/examples/mini/inputs/assembly_packages/chimpanzee/ncbi_dataset/data/GCF_MINI" = [
+  "examples/mini/inputs/assembly_packages/chimpanzee/ncbi_dataset/data/GCF_MINI/assembly_data_report.jsonl",
+  "examples/mini/inputs/assembly_packages/chimpanzee/ncbi_dataset/data/GCF_MINI/cds_from_genomic.fna",
+  "examples/mini/inputs/assembly_packages/chimpanzee/ncbi_dataset/data/GCF_MINI/genomic.gff",
+  "examples/mini/inputs/assembly_packages/chimpanzee/ncbi_dataset/data/GCF_MINI/protein.faa",
+  "examples/mini/inputs/assembly_packages/chimpanzee/ncbi_dataset/data/GCF_MINI/sequence_report.jsonl"
+]
+"share/refseq2cds/examples/mini/inputs/assembly_packages/gorilla" = [
+  "examples/mini/inputs/assembly_packages/gorilla/dataset_catalog.json"
+]
+"share/refseq2cds/examples/mini/inputs/assembly_packages/gorilla/ncbi_dataset/data/GCF_MINI" = [
+  "examples/mini/inputs/assembly_packages/gorilla/ncbi_dataset/data/GCF_MINI/assembly_data_report.jsonl",
+  "examples/mini/inputs/assembly_packages/gorilla/ncbi_dataset/data/GCF_MINI/cds_from_genomic.fna",
+  "examples/mini/inputs/assembly_packages/gorilla/ncbi_dataset/data/GCF_MINI/genomic.gff",
+  "examples/mini/inputs/assembly_packages/gorilla/ncbi_dataset/data/GCF_MINI/protein.faa",
+  "examples/mini/inputs/assembly_packages/gorilla/ncbi_dataset/data/GCF_MINI/sequence_report.jsonl"
+]

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.1.2 - 2026-05-11
+
+### Added
+
+- Offline `refseq2cds test --example mini` smoke test covering strict singleton filtering, CDS QC, FASTA writing, and human coordinate matrix generation.
+- Packaged `examples/mini/` fixture for reviewer/developer verification without NCBI downloads.
+- Pytest tests and GitHub Actions CI workflow.
+- `environment.yml` for reproducible conda/mamba setup.
+- Draft `conda-recipe/meta.yaml` for future conda/Bioconda packaging.
+- `CITATION.cff` and packaging/troubleshooting documentation.
+
+### Changed
+
+- Project version bumped to `0.1.2`.
+- Pipeline drivers now support `--manifest`, `--input-root`, `--output-root`, and offline fixture execution.
+- Installable package metadata now includes workflow scripts and mini fixtures under `share/refseq2cds`.
+
 ## v0.1.1 - 2026-05-11
 
 ### Added

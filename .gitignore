@@ -28,3 +28,6 @@ bin/dataformat
 build/
 dist/
 *.egg-info/
+
+# Internal planning notes
+refseq2cds_Bioinformatics_ApplicationNote_plan.md

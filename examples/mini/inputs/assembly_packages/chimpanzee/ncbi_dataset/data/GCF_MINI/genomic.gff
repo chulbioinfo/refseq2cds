@@ -1,0 +1,16 @@
+##gff-version 3
+NC_MINIC1.1	RefSeq	gene	100	162	.	+	.	ID=gene-2001;Dbxref=GeneID:2001;Name=PASS1_PT;gene=PASS1_PT;gene_biotype=protein-coding
+NC_MINIC1.1	RefSeq	mRNA	100	162	.	+	.	ID=rna-XM_000001.1;Parent=gene-2001;Dbxref=GeneID:2001;transcript_id=XM_000001.1;gene=PASS1_PT;tag=RefSeq Select
+NC_MINIC1.1	RefSeq	CDS	100	162	.	+	0	ID=cds-XP_000001.1;Parent=rna-XM_000001.1;Dbxref=GeneID:2001;protein_id=XP_000001.1
+NC_MINIC1.1	RefSeq	gene	200	262	.	+	.	ID=gene-2002;Dbxref=GeneID:2002;Name=MISSING1_PT;gene=MISSING1_PT;gene_biotype=protein-coding
+NC_MINIC1.1	RefSeq	mRNA	200	262	.	+	.	ID=rna-XM_000002.1;Parent=gene-2002;Dbxref=GeneID:2002;transcript_id=XM_000002.1;gene=MISSING1_PT;tag=RefSeq Select
+NC_MINIC1.1	RefSeq	CDS	200	262	.	+	0	ID=cds-XP_000002.1;Parent=rna-XM_000002.1;Dbxref=GeneID:2002;protein_id=XP_000002.1
+NC_MINIC1.1	RefSeq	gene	300	362	.	+	.	ID=gene-2003;Dbxref=GeneID:2003;Name=PARALOG1_PT;gene=PARALOG1_PT;gene_biotype=protein-coding
+NC_MINIC1.1	RefSeq	mRNA	300	362	.	+	.	ID=rna-XM_000003.1;Parent=gene-2003;Dbxref=GeneID:2003;transcript_id=XM_000003.1;gene=PARALOG1_PT;tag=RefSeq Select
+NC_MINIC1.1	RefSeq	CDS	300	362	.	+	0	ID=cds-XP_000003.1;Parent=rna-XM_000003.1;Dbxref=GeneID:2003;protein_id=XP_000003.1
+NC_MINIC1.1	RefSeq	gene	400	462	.	+	.	ID=gene-2005;Dbxref=GeneID:2005;Name=STOP1_PT;gene=STOP1_PT;gene_biotype=protein-coding
+NC_MINIC1.1	RefSeq	mRNA	400	462	.	+	.	ID=rna-XM_000005.1;Parent=gene-2005;Dbxref=GeneID:2005;transcript_id=XM_000005.1;gene=STOP1_PT;tag=RefSeq Select
+NC_MINIC1.1	RefSeq	CDS	400	462	.	+	0	ID=cds-XP_000005.1;Parent=rna-XM_000005.1;Dbxref=GeneID:2005;protein_id=XP_000005.1
+NC_MINIC2.1	RefSeq	gene	500	562	.	-	.	ID=gene-2006;Dbxref=GeneID:2006;Name=NEG1_PT;gene=NEG1_PT;gene_biotype=protein-coding
+NC_MINIC2.1	RefSeq	mRNA	500	562	.	-	.	ID=rna-XM_000006.1;Parent=gene-2006;Dbxref=GeneID:2006;transcript_id=XM_000006.1;gene=NEG1_PT;tag=RefSeq Select
+NC_MINIC2.1	RefSeq	CDS	500	562	.	-	0	ID=cds-XP_000006.1;Parent=rna-XM_000006.1;Dbxref=GeneID:2006;protein_id=XP_000006.1

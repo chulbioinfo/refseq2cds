@@ -1,0 +1,4 @@
+token	taxid	scientific_name	common_name	gcf_accession	outgroup
+human	9606	Homo sapiens	human	GCF_MINI_HUMAN.1	false
+chimpanzee	9598	Pan troglodytes	chimpanzee	GCF_MINI_CHIMP.1	false
+gorilla	9595	Gorilla gorilla	gorilla	GCF_MINI_GORILLA.1	false

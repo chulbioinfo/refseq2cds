@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use refseq2cds, please cite the software release."
+title: "refseq2cds: assembly-exact construction of RefSeq singleton ortholog CDS datasets"
+version: "0.1.2"
+date-released: "2026-05-11"
+license: MIT
+authors:
+  - family-names: Lee
+    given-names: Chul
+    email: chul.bioinfo@gmail.com
+repository-code: "https://github.com/chulbioinfo/refseq2cds"
+url: "https://github.com/chulbioinfo/refseq2cds"
+keywords:
+  - RefSeq
+  - CDS
+  - orthologs
+  - comparative genomics
+  - codon alignment

@@ -43,18 +43,20 @@ from Bio import SeqIO
 from Bio.Data.CodonTable import unambiguous_dna_by_id
 
 
-ROOT = Path(__file__).resolve().parents[2]
-MANIFEST = ROOT / "config" / "species_manifest.tsv"
-DATASETS = ROOT / "bin" / "datasets"
-RAW_BULK = ROOT / "raw" / "ncbi_bulk"
-RAW_ASSEMBLIES = ROOT / "raw" / "assembly_packages"
-INDEXES = ROOT / "indexes"
-ORTHOLOGY = ROOT / "orthology"
-SELECTION = ROOT / "selection"
-QC = ROOT / "qc"
-FASTAS = ROOT / "fastas"
-REPORTS = ROOT / "reports"
-LOGS = ROOT / "logs"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+ROOT = PROJECT_ROOT
+OUTPUT_ROOT = PROJECT_ROOT
+MANIFEST = PROJECT_ROOT / "config" / "species_manifest.tsv"
+DATASETS = PROJECT_ROOT / "bin" / "datasets"
+RAW_BULK = PROJECT_ROOT / "raw" / "ncbi_bulk"
+RAW_ASSEMBLIES = PROJECT_ROOT / "raw" / "assembly_packages"
+INDEXES = PROJECT_ROOT / "indexes"
+ORTHOLOGY = PROJECT_ROOT / "orthology"
+SELECTION = PROJECT_ROOT / "selection"
+QC = PROJECT_ROOT / "qc"
+FASTAS = PROJECT_ROOT / "fastas"
+REPORTS = PROJECT_ROOT / "reports"
+LOGS = PROJECT_ROOT / "logs"
 
 STANDARD_TABLE = unambiguous_dna_by_id[1]
 STOP_CODONS = set(STANDARD_TABLE.stop_codons)
@@ -79,6 +81,57 @@ def log(message: str) -> None:
     print(f"[{ts}] {message}", flush=True)
 
 
+def configure_paths(
+    *,
+    manifest: Optional[str] = None,
+    input_root: Optional[str] = None,
+    output_root: Optional[str] = None,
+    datasets: Optional[str] = None,
+) -> None:
+    """Configure input/output roots without breaking the repository defaults."""
+    global ROOT, OUTPUT_ROOT, MANIFEST, DATASETS
+    global RAW_BULK, RAW_ASSEMBLIES, INDEXES, ORTHOLOGY, SELECTION, QC, FASTAS, REPORTS, LOGS
+
+    OUTPUT_ROOT = Path(output_root).resolve() if output_root else PROJECT_ROOT
+    ROOT = OUTPUT_ROOT
+    raw_root = Path(input_root).resolve() if input_root else OUTPUT_ROOT / "raw"
+    MANIFEST = Path(manifest).resolve() if manifest else PROJECT_ROOT / "config" / "species_manifest.tsv"
+    DATASETS = resolve_executable(datasets or "datasets")
+    RAW_BULK = raw_root / "ncbi_bulk"
+    RAW_ASSEMBLIES = raw_root / "assembly_packages"
+    INDEXES = OUTPUT_ROOT / "indexes"
+    ORTHOLOGY = OUTPUT_ROOT / "orthology"
+    SELECTION = OUTPUT_ROOT / "selection"
+    QC = OUTPUT_ROOT / "qc"
+    FASTAS = OUTPUT_ROOT / "fastas"
+    REPORTS = OUTPUT_ROOT / "reports"
+    LOGS = OUTPUT_ROOT / "logs"
+
+
+def rel_path(path: Path) -> str:
+    for base in [OUTPUT_ROOT, PROJECT_ROOT]:
+        try:
+            return str(path.relative_to(base))
+        except ValueError:
+            continue
+    return str(path)
+
+
+def resolve_executable(name: str) -> Path:
+    path = Path(name)
+    if path.exists():
+        return path.resolve()
+    if path.parent != Path("."):
+        return path
+    for candidate in [Path.cwd() / "bin" / name, PROJECT_ROOT / "bin" / name]:
+        if candidate.exists():
+            return candidate.resolve()
+    found = shutil.which(name)
+    if found:
+        return Path(found)
+    return path
+
+
 def ensure_dirs() -> None:
     for path in [
         RAW_BULK,
@@ -94,7 +147,9 @@ def ensure_dirs() -> None:
         path.mkdir(parents=True, exist_ok=True)
 
 
-def read_manifest(path: Path = MANIFEST) -> List[Species]:
+def read_manifest(path: Optional[Path] = None) -> List[Species]:
+    if path is None:
+        path = MANIFEST
     rows: List[Species] = []
     with path.open(newline="") as fh:
         reader = csv.DictReader(fh, delimiter="\t")
@@ -134,7 +189,9 @@ def read_manifest(path: Path = MANIFEST) -> List[Species]:
     return rows
 
 
-def run(cmd: Sequence[str], *, retries: int = 1, cwd: Path = ROOT) -> None:
+def run(cmd: Sequence[str], *, retries: int = 1, cwd: Optional[Path] = None) -> None:
+    if cwd is None:
+        cwd = PROJECT_ROOT
     cmd_text = " ".join(str(x) for x in cmd)
     for attempt in range(1, retries + 1):
         log(f"RUN attempt {attempt}/{retries}: {cmd_text}")
@@ -171,14 +228,57 @@ def maybe_to_parquet_and_tsv(df: pd.DataFrame, parquet: Path, tsv: Optional[Path
 
 
 def latest_file(pattern: str) -> Optional[Path]:
-    files = sorted(ROOT.glob(pattern))
+    files = sorted(PROJECT_ROOT.glob(pattern))
     return files[-1] if files else None
 
 
-def stage0_preflight(species: List[Species], force: bool = False) -> None:
+def latest_bulk_file(prefix: str) -> Optional[Path]:
+    files = sorted(RAW_BULK.glob(f"{prefix}*"))
+    return files[-1] if files else None
+
+
+def open_text_maybe_gzip(path: Path):
+    if path.suffix == ".gz":
+        return gzip.open(path, "rt", newline="")
+    return path.open("rt", newline="")
+
+
+def stage0_preflight(species: List[Species], force: bool = False, offline: bool = False) -> None:
     out = REPORTS / "preflight.json"
     if out.exists() and not force:
         log("Stage 0 preflight already exists; skipping")
+        return
+    if offline:
+        rows = []
+        for sp in species:
+            package_dir = RAW_ASSEMBLIES / sp.token
+            rows.append(
+                {
+                    "token": sp.token,
+                    "taxid": sp.taxid,
+                    "gcf_accession": sp.gcf_accession,
+                    "package_path": rel_path(package_dir),
+                    "package_present": package_done(package_dir),
+                    "status": "pass" if package_done(package_dir) else "missing_package",
+                }
+            )
+        df = pd.DataFrame(rows)
+        df.to_csv(REPORTS / "gcf_release_ids.tsv", sep="\t", index=False)
+        status = "pass" if (df["status"] == "pass").all() else "fail"
+        write_json(
+            out,
+            {
+                "status": status,
+                "mode": "offline",
+                "checked_at": datetime.now().isoformat(),
+                "species_count": len(species),
+                "tokens": [s.token for s in species],
+                "gcf_records": rows,
+            },
+        )
+        if status != "pass":
+            raise RuntimeError("Offline preflight failed; see reports/preflight.json")
+        log("Stage 0 offline preflight complete")
         return
     if not DATASETS.exists():
         raise FileNotFoundError(f"NCBI datasets CLI not found: {DATASETS}")
@@ -243,9 +343,16 @@ def stage0_preflight(species: List[Species], force: bool = False) -> None:
     log("Stage 0 preflight complete")
 
 
-def stage1_bulk(force: bool = False) -> Tuple[Path, Path]:
-    existing_orth = latest_file("raw/ncbi_bulk/gene_orthologs.*.gz")
-    existing_info = latest_file("raw/ncbi_bulk/gene_info.*.gz")
+def stage1_bulk(force: bool = False, offline: bool = False) -> Tuple[Path, Path]:
+    existing_orth = latest_bulk_file("gene_orthologs")
+    existing_info = latest_bulk_file("gene_info")
+    if offline:
+        if not existing_orth or not existing_info:
+            raise FileNotFoundError(
+                f"Offline mode requires gene_orthologs* and gene_info* under {RAW_BULK}"
+            )
+        log("Stage 1 using offline NCBI Gene bulk fixtures")
+        return existing_orth, existing_info
     if existing_orth and existing_info and not force:
         log("Stage 1 bulk files already exist; skipping")
         return existing_orth, existing_info
@@ -288,7 +395,13 @@ def package_done(package_dir: Path) -> bool:
     )
 
 
-def stage2_download_assemblies(species: List[Species], force: bool = False) -> None:
+def stage2_download_assemblies(species: List[Species], force: bool = False, offline: bool = False) -> None:
+    if offline:
+        missing = [sp.token for sp in species if not package_done(RAW_ASSEMBLIES / sp.token)]
+        if missing:
+            raise FileNotFoundError(f"Offline mode missing assembly packages: {missing}")
+        log("Stage 2 using offline assembly packages")
+        return
     checksums: List[Dict[str, Any]] = []
     for sp in species:
         package_dir = RAW_ASSEMBLIES / sp.token
@@ -325,7 +438,7 @@ def stage2_download_assemblies(species: List[Species], force: bool = False) -> N
                 {
                     "token": sp.token,
                     "gcf_accession": sp.gcf_accession,
-                    "zip_path": str(zip_path.relative_to(ROOT)),
+                    "zip_path": rel_path(zip_path),
                     "sha256": sha256_file(zip_path),
                     "size_bytes": zip_path.stat().st_size,
                 }
@@ -482,7 +595,7 @@ def locate_package_files(package_dir: Path) -> Dict[str, Optional[Path]]:
 
 def parse_gene_info(gene_info_path: Path, target_taxids: set[int]) -> Dict[Tuple[int, int], Dict[str, str]]:
     out: Dict[Tuple[int, int], Dict[str, str]] = {}
-    with gzip.open(gene_info_path, "rt", newline="") as fh:
+    with open_text_maybe_gzip(gene_info_path) as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         if reader.fieldnames and reader.fieldnames[0].startswith("#"):
             reader.fieldnames[0] = reader.fieldnames[0].lstrip("#")
@@ -679,12 +792,12 @@ def build_indexes_for_species(
             or annotation_info.get("releaseId", ""),
             "annotation_release_date": annotation_info.get("releaseDate")
             or annotation_info.get("release_date", ""),
-            "package_path": str(package_dir.relative_to(ROOT)),
-            "gff3_path": str(files["gff3"].relative_to(ROOT)) if files["gff3"] else "",
-            "cds_fasta_path": str(files["cds"].relative_to(ROOT)) if files["cds"] else "",
-            "rna_fasta_path": str(files["rna"].relative_to(ROOT)) if files["rna"] else "",
-            "protein_fasta_path": str(files["protein"].relative_to(ROOT)) if files["protein"] else "",
-            "seq_report_path": str(files["sequence_report"].relative_to(ROOT)) if files["sequence_report"] else "",
+            "package_path": rel_path(package_dir),
+            "gff3_path": rel_path(files["gff3"]) if files["gff3"] else "",
+            "cds_fasta_path": rel_path(files["cds"]) if files["cds"] else "",
+            "rna_fasta_path": rel_path(files["rna"]) if files["rna"] else "",
+            "protein_fasta_path": rel_path(files["protein"]) if files["protein"] else "",
+            "seq_report_path": rel_path(files["sequence_report"]) if files["sequence_report"] else "",
         }
     ]
 
@@ -847,7 +960,7 @@ def stage4_orthology_edges(species: List[Species], orth_path: Path, force: bool 
     target_taxids = {s.taxid for s in species}
     rows: List[Dict[str, Any]] = []
     log(f"Parsing gene_orthologs.gz for edges internal to {len(target_taxids)} locked taxa")
-    with gzip.open(orth_path, "rt", newline="") as fh:
+    with open_text_maybe_gzip(orth_path) as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         if reader.fieldnames and reader.fieldnames[0].startswith("#"):
             reader.fieldnames[0] = reader.fieldnames[0].lstrip("#")
@@ -1327,7 +1440,7 @@ def stage9_write_fastas(species: List[Species], force: bool = False) -> None:
                     "reference_taxid": reference_taxid,
                     "reference_token": reference_token,
                     "human_symbol": reference_symbol,
-                    "fasta_path": str(fasta_path.relative_to(ROOT)),
+                    "fasta_path": rel_path(fasta_path),
                     "token": row["token"],
                     "taxid": row["taxid"],
                     "GeneID": row["GeneID"],
@@ -1356,8 +1469,8 @@ def stage9_write_fastas(species: List[Species], force: bool = False) -> None:
                 "reference_token": reference_token,
                 "human_symbol": reference_symbol,
                 "human_GeneID": reference_geneid,
-                "fasta_path": str(fasta_path.relative_to(ROOT)),
-                "meta_path": str(meta_path.relative_to(ROOT)),
+                "fasta_path": rel_path(fasta_path),
+                "meta_path": rel_path(meta_path),
                 "sequence_count": len(fam),
                 "sanity_status": sanity.loc[sanity["family_id"] == family_id, "status"].iloc[0],
             }
@@ -1462,10 +1575,21 @@ def main() -> None:
         default=9606,
         help="TaxID whose gene symbol is used for family IDs and FASTA filenames (default: 9606, human).",
     )
+    parser.add_argument("--manifest", default=str(MANIFEST), help="Species manifest TSV")
+    parser.add_argument("--input-root", help="Input root containing ncbi_bulk/ and assembly_packages/")
+    parser.add_argument("--output-root", help="Output root for indexes, reports, FASTA files and QC")
+    parser.add_argument("--datasets", default=str(DATASETS), help="NCBI Datasets CLI executable")
+    parser.add_argument("--offline", action="store_true", help="Use local input-root fixtures; do not download NCBI data")
     parser.add_argument("--force", action="store_true", help="Rebuild selected stages")
     args = parser.parse_args()
 
-    os.chdir(ROOT)
+    configure_paths(
+        manifest=args.manifest,
+        input_root=args.input_root,
+        output_root=args.output_root,
+        datasets=args.datasets,
+    )
+    os.chdir(PROJECT_ROOT)
     ensure_dirs()
     species = read_manifest()
     manifest_taxids = {s.taxid for s in species}
@@ -1474,21 +1598,21 @@ def main() -> None:
             f"--reference-taxid {args.reference_taxid} is not present in config/species_manifest.tsv"
         )
     steps = parse_steps(args.steps)
-    orth_path = latest_file("raw/ncbi_bulk/gene_orthologs.*.gz")
-    info_path = latest_file("raw/ncbi_bulk/gene_info.*.gz")
+    orth_path = latest_bulk_file("gene_orthologs")
+    info_path = latest_bulk_file("gene_info")
 
     if "preflight" in steps:
-        stage0_preflight(species, args.force)
+        stage0_preflight(species, args.force, args.offline)
     if "bulk" in steps:
-        orth_path, info_path = stage1_bulk(args.force)
+        orth_path, info_path = stage1_bulk(args.force, args.offline)
     needs_bulk_downstream = any(
         step in steps
         for step in ["indexes", "edges", "singletons", "select", "qc", "sanity", "fastas", "report"]
     )
     if needs_bulk_downstream and (not orth_path or not info_path):
-        orth_path, info_path = stage1_bulk(False)
+        orth_path, info_path = stage1_bulk(False, args.offline)
     if "assemblies" in steps:
-        stage2_download_assemblies(species, args.force)
+        stage2_download_assemblies(species, args.force, args.offline)
     if "indexes" in steps:
         stage3_build_indexes(species, info_path, args.force)
     if "edges" in steps:

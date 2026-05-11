@@ -2,7 +2,7 @@
 
 RefSeq 1:1 orthologs to CDS FASTA files.
 
-Version: `0.1.1`
+Version: `0.1.2`
 
 Author: Chul Lee (chul.bioinfo@gmail.com)
 
@@ -15,6 +15,12 @@ creates human CDS-position to genomic-position matrices so codon/site-level
 results can later be converted to UCSC Genome Browser BED coordinates. It can
 also create lightweight tree-free codon alignments with a MAFFT protein MSA
 followed by PAL2NAL back-translation.
+
+`refseq2cds` is not a de novo orthology inference program and it is not just a
+CDS downloader. It treats NCBI Gene orthology records as input evidence, applies
+a strict locked-species singleton filter, selects CDS records from exact RefSeq
+`GCF_*` assembly annotation packages, records rejection reasons, and emits
+auditable FASTA, metadata, report, and coordinate-matrix outputs.
 
 ## Scope
 
@@ -298,8 +304,8 @@ normalized indexes are kept for reproducibility.
 ### 1. Clone
 
 ```bash
-git clone <your-repo-url>
-cd NCBI_ortholog
+git clone https://github.com/chulbioinfo/refseq2cds.git
+cd refseq2cds
 ```
 
 ### 2. Create Python Environment
@@ -320,6 +326,16 @@ python -m pip install -r requirements.txt
 In that mode, run commands as `python refseq2cds.py ...` instead of
 `refseq2cds ...`.
 
+Conda/mamba environment:
+
+```bash
+mamba env create -f environment.yml
+conda activate refseq2cds
+```
+
+The environment file installs Python dependencies plus common command-line
+tools: NCBI Datasets CLI, MAFFT, and PAL2NAL.
+
 ### 3. Download NCBI Datasets CLI
 
 The package can place `datasets` and `dataformat` in `./bin`:
@@ -338,10 +354,41 @@ The workflow was tested with NCBI Datasets CLI `18.25.1`.
 
 ## Quick Start
 
+### Offline Smoke Test
+
+Before downloading anything from NCBI, verify the installation with the
+packaged mini dataset:
+
+```bash
+refseq2cds test --example mini
+```
+
+This should finish in seconds. The fixture contains three RefSeq-like species,
+one accepted positive-strand family, one accepted negative-strand family, a
+missing-species rejection, a paralog-like rejection, and an internal-stop CDS
+rejection. It checks graph filtering, CDS QC, FASTA writing, and human
+coordinate matrix generation.
+
+For development:
+
+```bash
+python -m pip install -e .[test]
+pytest -q
+```
+
+### Full RefSeq Run
+
 Run the full CDS + matrix workflow with the default 14-species manifest:
 
 ```bash
 refseq2cds run --steps all --download-tools --with-matrices
+```
+
+If you installed with conda/mamba, `ncbi-datasets-cli` is already in the
+environment, so `--download-tools` is optional:
+
+```bash
+refseq2cds run --steps all --with-matrices
 ```
 
 By default, gene symbols and FASTA filenames come from human taxid `9606`.
@@ -397,6 +444,12 @@ Fast verification:
 
 ```bash
 refseq2cds verify
+```
+
+If outputs are not in the current directory:
+
+```bash
+refseq2cds verify --output-root /path/to/run --manifest /path/to/species_manifest.tsv
 ```
 
 Full FASTA verification plus sampled matrix row counts:
@@ -470,6 +523,10 @@ orthology is taxid/GeneID based.
 Important: changing the manifest changes the biological input set. Use
 `refseq2cds run --steps all --force --with-matrices` after generating a new
 manifest so old indexes/FASTA files are not reused.
+
+When `--manifest` is omitted, `refseq2cds run` uses
+`./config/species_manifest.tsv` if it exists in the current working directory;
+otherwise it falls back to the packaged default 14-species manifest.
 
 If you want filenames/symbols from a non-human reference species, pass its
 taxid during the run:
@@ -560,6 +617,42 @@ alignments/mafft_pal2nal/summary.json
 refseq2cds summary
 ```
 
+For a separate output directory:
+
+```bash
+refseq2cds summary --output-root /path/to/run
+```
+
+## Packaging And CI
+
+This repository includes packaging and reviewer-smoke-test scaffolding:
+
+```text
+environment.yml              reproducible conda/mamba environment
+conda-recipe/meta.yaml       draft noarch Python conda/Bioconda recipe
+.github/workflows/test.yml   GitHub Actions pytest workflow
+examples/mini/               offline mini fixture
+tests/                       pytest tests for CLI and mini matrix logic
+CITATION.cff                 citation metadata
+```
+
+To test the draft conda recipe locally:
+
+```bash
+mamba install -c conda-forge -c bioconda conda-build conda-verify
+conda build conda-recipe
+```
+
+For a Bioconda submission, replace `source: path: ..` in
+`conda-recipe/meta.yaml` with the GitHub release tarball URL and SHA256 for the
+submitted release.
+
+Additional notes:
+
+- `docs/options.md` summarizes commonly used command options.
+- `docs/troubleshooting.md` covers common installation and runtime issues.
+- `docs/conda_packaging.md` records conda/Bioconda packaging steps.
+
 ## Human CDS Genomic Matrix Format
 
 Each matrix is a gzipped TSV. Example:
@@ -617,6 +710,11 @@ workflow/scripts/run_cds_pipeline.py
 workflow/scripts/build_human_cds_position_matrices.py
 workflow/scripts/align_mafft_pal2nal.py
 config/species_manifest.tsv
+examples/mini/
+tests/
+docs/
+conda-recipe/meta.yaml
+environment.yml
 requirements.txt
 pyproject.toml
 run_cds_pipeline.sh

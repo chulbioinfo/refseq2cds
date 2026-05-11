@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import List, Optional, Sequence
@@ -36,7 +37,12 @@ def find_project_root() -> Path:
     still be used from a cloned checkout because the current working directory
     is checked first.
     """
-    candidates = [Path.cwd().resolve(), MODULE_ROOT]
+    candidates = [
+        Path.cwd().resolve(),
+        MODULE_ROOT,
+        Path(sys.prefix).resolve() / "share" / "refseq2cds",
+        Path(sys.exec_prefix).resolve() / "share" / "refseq2cds",
+    ]
     for candidate in list(candidates):
         candidates.extend(candidate.parents)
     seen = set()
@@ -97,8 +103,31 @@ def require_file(path: Path, label: str) -> None:
         raise FileNotFoundError(f"Missing {label}: {path}")
 
 
+def default_manifest_path() -> Path:
+    local = Path.cwd() / "config" / "species_manifest.tsv"
+    if local.exists():
+        return local.resolve()
+    return DEFAULT_MANIFEST
+
+
+def resolve_tool(name: str) -> str:
+    """Resolve an executable from explicit path, ./bin, package bin, or PATH."""
+    path = Path(name)
+    if path.exists():
+        return str(path.resolve())
+    if path.parent != Path("."):
+        return str(path)
+    for candidate in [Path.cwd() / "bin" / name, ROOT / "bin" / name]:
+        if candidate.exists():
+            return str(candidate.resolve())
+    found = shutil.which(name)
+    if found:
+        return found
+    return name
+
+
 def download_datasets_cli() -> None:
-    bin_dir = ROOT / "bin"
+    bin_dir = Path.cwd() / "bin"
     bin_dir.mkdir(exist_ok=True)
     system = platform.system().lower()
     if system == "darwin":
@@ -177,10 +206,13 @@ def collect_gcfs(args: argparse.Namespace) -> List[str]:
 
 
 def summary_for_gcf(gcf: str) -> dict:
-    datasets = ROOT / "bin" / "datasets"
-    require_file(datasets, "NCBI Datasets CLI")
+    datasets = resolve_tool("datasets")
+    if not shutil.which(datasets) and not Path(datasets).exists():
+        raise FileNotFoundError(
+            "Missing NCBI Datasets CLI. Run `refseq2cds download-tools` or install ncbi-datasets-cli."
+        )
     stdout = run_capture([
-        str(datasets),
+        datasets,
         "summary",
         "genome",
         "accession",
@@ -290,11 +322,14 @@ def cmd_run(args: argparse.Namespace) -> None:
     require_file(RUN_DRIVER, "pipeline driver")
     if args.download_tools:
         download_datasets_cli()
-    snapshot = ROOT / "reports" / "run_manifest_snapshot.tsv"
-    if snapshot.exists() and DEFAULT_MANIFEST.exists() and not args.force:
-        if snapshot.read_text() != DEFAULT_MANIFEST.read_text():
+    datasets = resolve_tool(args.datasets)
+    manifest = Path(args.manifest).resolve() if args.manifest else default_manifest_path()
+    output_root = Path(args.output_root).resolve() if args.output_root else Path.cwd().resolve()
+    snapshot = output_root / "reports" / "run_manifest_snapshot.tsv"
+    if snapshot.exists() and manifest.exists() and not args.force:
+        if snapshot.read_text() != manifest.read_text():
             raise RuntimeError(
-                "config/species_manifest.tsv differs from the manifest used for existing outputs. "
+                f"{manifest} differs from the manifest used for existing outputs. "
                 "Run with --force to rebuild all stages for the new GCF set."
             )
     cmd = [
@@ -304,16 +339,31 @@ def cmd_run(args: argparse.Namespace) -> None:
         args.steps,
         "--reference-taxid",
         str(args.reference_taxid),
+        "--manifest",
+        str(manifest),
+        "--output-root",
+        str(output_root),
+        "--datasets",
+        datasets,
     ]
+    if args.input_root:
+        cmd.extend(["--input-root", args.input_root])
+    if args.offline:
+        cmd.append("--offline")
     if args.force:
         cmd.append("--force")
     run(cmd)
-    if DEFAULT_MANIFEST.exists():
+    if manifest.exists():
         snapshot.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(DEFAULT_MANIFEST, snapshot)
+        shutil.copyfile(manifest, snapshot)
     if args.with_matrices:
-        if manifest_has_taxid(9606):
-            matrix_args = argparse.Namespace(force=args.force)
+        if manifest_has_taxid(9606, manifest):
+            matrix_args = argparse.Namespace(
+                force=args.force,
+                manifest=str(manifest),
+                input_root=args.input_root,
+                output_root=str(output_root),
+            )
             cmd_build_matrices(matrix_args)
         else:
             log("Skipping human CDS matrices because manifest does not include taxid 9606")
@@ -321,7 +371,17 @@ def cmd_run(args: argparse.Namespace) -> None:
 
 def cmd_build_matrices(args: argparse.Namespace) -> None:
     require_file(MATRIX_DRIVER, "human CDS matrix driver")
-    cmd = [python_executable(), str(MATRIX_DRIVER)]
+    output_root = Path(args.output_root).resolve() if args.output_root else Path.cwd().resolve()
+    manifest = Path(args.manifest).resolve() if args.manifest else default_manifest_path()
+    cmd = [
+        python_executable(),
+        str(MATRIX_DRIVER),
+        "--manifest",
+        str(manifest),
+    ]
+    if args.input_root:
+        cmd.extend(["--input-root", args.input_root])
+    cmd.extend(["--output-root", str(output_root)])
     if args.force:
         cmd.append("--force")
     run(cmd)
@@ -366,16 +426,67 @@ def read_tsv(path: Path) -> List[dict]:
         return list(csv.DictReader(fh, delimiter="\t"))
 
 
-def manifest_has_taxid(taxid: int) -> bool:
-    if not DEFAULT_MANIFEST.exists():
+def manifest_has_taxid(taxid: int, manifest: Path = DEFAULT_MANIFEST) -> bool:
+    if not manifest.exists():
         return False
-    for row in read_tsv(DEFAULT_MANIFEST):
+    for row in read_tsv(manifest):
         try:
             if int(row["taxid"]) == taxid:
                 return True
         except Exception:
             continue
     return False
+
+
+def cmd_test(args: argparse.Namespace) -> None:
+    if args.example != "mini":
+        raise ValueError(f"Unsupported example: {args.example}")
+    example_dir = ROOT / "examples" / "mini"
+    manifest = example_dir / "manifest.tsv"
+    input_root = example_dir / "inputs"
+    require_file(manifest, "mini manifest")
+    require_file(input_root / "ncbi_bulk" / "gene_orthologs.mini.tsv", "mini gene_orthologs fixture")
+    if args.output_root:
+        output_root = Path(args.output_root).resolve()
+        if output_root.exists() and args.force:
+            shutil.rmtree(output_root)
+        output_root.mkdir(parents=True, exist_ok=True)
+    else:
+        output_root = Path(tempfile.mkdtemp(prefix="refseq2cds_mini_"))
+    run_args = argparse.Namespace(
+        steps="all",
+        reference_taxid=9606,
+        manifest=str(manifest),
+        input_root=str(input_root),
+        output_root=str(output_root),
+        datasets=resolve_tool("datasets"),
+        offline=True,
+        force=True,
+        download_tools=False,
+        with_matrices=True,
+    )
+    cmd_run(run_args)
+    summary = json.loads((output_root / "reports" / "summary.json").read_text())
+    matrix_summary = json.loads((output_root / "reports" / "human_cds_position_matrices.summary.json").read_text())
+    fasta_count = int(summary.get("fastas", {}).get("count", -1))
+    matrix_count = int(matrix_summary.get("matrix_files", -1))
+    matrix_failed = int(matrix_summary.get("failed", -1))
+    rejected = summary.get("rejected_reasons", {})
+    if fasta_count != 2:
+        raise AssertionError(f"mini expected 2 FASTA files, observed {fasta_count}")
+    if matrix_count != 2 or matrix_failed != 0:
+        raise AssertionError(f"mini expected 2 successful matrices, observed count={matrix_count}, failed={matrix_failed}")
+    if int(rejected.get("component_size_not_expected_species_count", 0)) < 2:
+        raise AssertionError(f"mini expected missing/paralog rejection counts, observed {rejected}")
+    result = {
+        "status": "pass",
+        "example": "mini",
+        "output_root": str(output_root),
+        "fastas": fasta_count,
+        "human_matrices": matrix_count,
+        "rejected_reasons": rejected,
+    }
+    print(json.dumps(result, indent=2, sort_keys=True))
 
 
 def count_fasta_records(path: Path) -> tuple[int, set[str]]:
@@ -396,31 +507,30 @@ def count_gzip_tsv_rows(path: Path) -> int:
 
 
 def verify_python_sources() -> None:
-    for path in [RUN_DRIVER, MATRIX_DRIVER, ALIGN_DRIVER, ROOT / "refseq2cds.py"]:
+    for path in [RUN_DRIVER, MATRIX_DRIVER, ALIGN_DRIVER, Path(__file__).resolve()]:
         require_file(path, "Python source")
         run([python_executable(), "-m", "py_compile", str(path)])
 
 
-def manifest_tokens() -> set[str]:
-    manifest = DEFAULT_MANIFEST
+def manifest_tokens(manifest: Path) -> set[str]:
     require_file(manifest, "species manifest")
     rows = read_tsv(manifest)
     return {row["token"] for row in rows}
 
 
-def verify_fastas(full: bool) -> dict:
-    manifest_path = ROOT / "fastas" / "manifest.tsv"
+def verify_fastas(full: bool, output_root: Path, species_manifest: Path) -> dict:
+    manifest_path = output_root / "fastas" / "manifest.tsv"
     require_file(manifest_path, "FASTA manifest")
     rows = read_tsv(manifest_path)
-    fasta_files = sorted((ROOT / "fastas").glob("*.fasta"))
-    expected_tokens = manifest_tokens()
+    fasta_files = sorted((output_root / "fastas").glob("*.fasta"))
+    expected_tokens = manifest_tokens(species_manifest)
     expected_count = len(expected_tokens)
     if len(rows) != len(fasta_files):
         raise AssertionError(f"FASTA manifest rows {len(rows)} != FASTA files {len(fasta_files)}")
     check_rows = rows if full else rows[:200]
     bad = []
     for row in check_rows:
-        fasta_path = ROOT / row["fasta_path"]
+        fasta_path = output_root / row["fasta_path"]
         count, headers = count_fasta_records(fasta_path)
         if count != expected_count or headers != expected_tokens:
             bad.append((row["fasta_path"], count, sorted(headers ^ expected_tokens)))
@@ -434,12 +544,12 @@ def verify_fastas(full: bool) -> dict:
     }
 
 
-def verify_matrices(mode: str) -> dict:
-    manifest_path = ROOT / "human_cds_matrices" / "manifest.tsv"
+def verify_matrices(mode: str, output_root: Path) -> dict:
+    manifest_path = output_root / "human_cds_matrices" / "manifest.tsv"
     require_file(manifest_path, "human CDS matrix manifest")
     rows = read_tsv(manifest_path)
-    matrix_files = sorted((ROOT / "human_cds_matrices").glob("*.human_cds_genomic_matrix.tsv.gz"))
-    failed_path = ROOT / "human_cds_matrices" / "failed.tsv"
+    matrix_files = sorted((output_root / "human_cds_matrices").glob("*.human_cds_genomic_matrix.tsv.gz"))
+    failed_path = output_root / "human_cds_matrices" / "failed.tsv"
     require_file(failed_path, "human CDS matrix failure log")
     failed_rows = max(0, sum(1 for _ in failed_path.open()) - 1)
     if failed_rows != 0:
@@ -455,14 +565,14 @@ def verify_matrices(mode: str) -> dict:
             sample = rows[:20]
         checked = len(sample)
         for row in sample:
-            actual = count_gzip_tsv_rows(ROOT / row["matrix_path"])
+            actual = count_gzip_tsv_rows(output_root / row["matrix_path"])
             expected = int(row["matrix_rows"])
             if actual != expected:
                 raise AssertionError(f"{row['matrix_path']} rows {actual} != manifest {expected}")
     elif mode == "full":
         checked = len(rows)
         for row in rows:
-            actual = count_gzip_tsv_rows(ROOT / row["matrix_path"])
+            actual = count_gzip_tsv_rows(output_root / row["matrix_path"])
             expected = int(row["matrix_rows"])
             if actual != expected:
                 raise AssertionError(f"{row['matrix_path']} rows {actual} != manifest {expected}")
@@ -476,9 +586,9 @@ def verify_matrices(mode: str) -> dict:
     }
 
 
-def verify_required_reports() -> dict:
-    summary = ROOT / "reports" / "summary.json"
-    matrix_summary = ROOT / "reports" / "human_cds_position_matrices.summary.json"
+def verify_required_reports(output_root: Path) -> dict:
+    summary = output_root / "reports" / "summary.json"
+    matrix_summary = output_root / "reports" / "human_cds_position_matrices.summary.json"
     require_file(summary, "pipeline summary")
     require_file(matrix_summary, "matrix summary")
     return {
@@ -488,10 +598,12 @@ def verify_required_reports() -> dict:
 
 
 def cmd_verify(args: argparse.Namespace) -> None:
+    output_root = Path(args.output_root).resolve() if args.output_root else Path.cwd().resolve()
+    species_manifest = Path(args.manifest).resolve() if args.manifest else default_manifest_path()
     verify_python_sources()
-    fasta_stats = verify_fastas(full=args.full)
-    matrix_stats = verify_matrices(mode=args.matrix_rows)
-    report_stats = verify_required_reports()
+    fasta_stats = verify_fastas(full=args.full, output_root=output_root, species_manifest=species_manifest)
+    matrix_stats = verify_matrices(mode=args.matrix_rows, output_root=output_root)
+    report_stats = verify_required_reports(output_root)
     result = {
         "status": "pass",
         "fastas": fasta_stats,
@@ -502,13 +614,14 @@ def cmd_verify(args: argparse.Namespace) -> None:
     print(json.dumps(result, indent=2, sort_keys=True))
 
 
-def cmd_summary(_args: argparse.Namespace) -> None:
-    verify_required_reports()
+def cmd_summary(args: argparse.Namespace) -> None:
+    output_root = Path(args.output_root).resolve() if args.output_root else Path.cwd().resolve()
+    verify_required_reports(output_root)
     for path in [
-        ROOT / "reports" / "summary.json",
-        ROOT / "reports" / "human_cds_position_matrices.summary.json",
+        output_root / "reports" / "summary.json",
+        output_root / "reports" / "human_cds_position_matrices.summary.json",
     ]:
-        print(f"\n# {path.relative_to(ROOT)}")
+        print(f"\n# {path.relative_to(output_root)}")
         print(path.read_text())
 
 
@@ -520,14 +633,14 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init-manifest", help="Write the default 14-species manifest")
-    p.add_argument("-o", "--output", default=str(DEFAULT_MANIFEST))
+    p.add_argument("-o", "--output", default=str(Path("config") / "species_manifest.tsv"))
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_init_manifest)
 
     p = sub.add_parser("manifest-from-gcf", help="Create config/species_manifest.tsv from GCF accessions")
     p.add_argument("gcfs", nargs="*", help="GCF accessions")
     p.add_argument("-i", "--inputfile", help="File with one GCF accession per line")
-    p.add_argument("-o", "--output", default=str(DEFAULT_MANIFEST))
+    p.add_argument("-o", "--output", default=str(Path("config") / "species_manifest.tsv"))
     p.add_argument("--outgroup", help="Optional outgroup token, taxid, or GCF accession to mark in the manifest")
     p.add_argument("--download-tools", action="store_true", help="Download NCBI Datasets CLI before querying")
     p.add_argument("--force", action="store_true")
@@ -544,12 +657,26 @@ def build_parser() -> argparse.ArgumentParser:
         default=9606,
         help="TaxID whose gene symbol is used for family IDs and FASTA filenames (default: 9606)",
     )
+    p.add_argument(
+        "--manifest",
+        help="Species manifest TSV; defaults to ./config/species_manifest.tsv if present, otherwise the packaged default manifest",
+    )
+    p.add_argument("--input-root", help="Input root containing ncbi_bulk/ and assembly_packages/")
+    p.add_argument("--output-root", help="Output root for generated pipeline outputs")
+    p.add_argument("--datasets", default="datasets", help="NCBI Datasets CLI executable")
+    p.add_argument("--offline", action="store_true", help="Use local input-root fixtures; do not download NCBI data")
     p.add_argument("--force", action="store_true")
     p.add_argument("--download-tools", action="store_true")
     p.add_argument("--with-matrices", action="store_true", help="Build human CDS genomic matrices after FASTA generation")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("build-matrices", help="Build human CDS genomic-position matrices")
+    p.add_argument(
+        "--manifest",
+        help="Species manifest TSV; defaults to ./config/species_manifest.tsv if present, otherwise the packaged default manifest",
+    )
+    p.add_argument("--input-root", help="Input root containing assembly_packages/")
+    p.add_argument("--output-root", help="Output root containing selection/ and fastas/")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_build_matrices)
 
@@ -560,10 +687,10 @@ def build_parser() -> argparse.ArgumentParser:
         default="mafft-pal2nal",
         help="Alignment backend (default: mafft-pal2nal)",
     )
-    p.add_argument("--input-dir", default=str(ROOT / "fastas"), help="Directory containing refseq2cds FASTA files")
+    p.add_argument("--input-dir", default=str(Path.cwd() / "fastas"), help="Directory containing refseq2cds FASTA files")
     p.add_argument(
         "--output-dir",
-        default=str(ROOT / "alignments" / "mafft_pal2nal"),
+        default=str(Path.cwd() / "alignments" / "mafft_pal2nal"),
         help="Alignment output directory",
     )
     p.add_argument("--mafft", default="mafft", help="MAFFT executable path or command name")
@@ -578,6 +705,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_align)
 
     p = sub.add_parser("verify", help="Verify code and generated outputs")
+    p.add_argument(
+        "--manifest",
+        help="Species manifest TSV used to check FASTA headers; defaults to ./config/species_manifest.tsv if present",
+    )
+    p.add_argument("--output-root", help="Output root containing fastas/, reports/, and matrices; defaults to current directory")
     p.add_argument("--full", action="store_true", help="Check every FASTA instead of a 200-file sample")
     p.add_argument(
         "--matrix-rows",
@@ -588,7 +720,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("summary", help="Print generated summary JSON files")
+    p.add_argument("--output-root", help="Output root containing reports/; defaults to current directory")
     p.set_defaults(func=cmd_summary)
+
+    p = sub.add_parser("test", help="Run packaged examples for reviewer-friendly smoke tests")
+    p.add_argument("--example", choices=["mini"], default="mini")
+    p.add_argument("--output-root", help="Where to write the mini run output; defaults to a temporary directory")
+    p.add_argument("--force", action="store_true", help="Remove/rebuild output-root when supplied")
+    p.set_defaults(func=cmd_test)
     return parser
 
 

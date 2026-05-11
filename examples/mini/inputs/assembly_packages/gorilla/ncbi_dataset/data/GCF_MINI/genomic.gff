@@ -1,0 +1,16 @@
+##gff-version 3
+NC_MINIG1.1	RefSeq	gene	100	162	.	+	.	ID=gene-3001;Dbxref=GeneID:3001;Name=PASS1_GG;gene=PASS1_GG;gene_biotype=protein-coding
+NC_MINIG1.1	RefSeq	mRNA	100	162	.	+	.	ID=rna-XM_100001.1;Parent=gene-3001;Dbxref=GeneID:3001;transcript_id=XM_100001.1;gene=PASS1_GG;tag=RefSeq Select
+NC_MINIG1.1	RefSeq	CDS	100	162	.	+	0	ID=cds-XP_100001.1;Parent=rna-XM_100001.1;Dbxref=GeneID:3001;protein_id=XP_100001.1
+NC_MINIG1.1	RefSeq	gene	300	362	.	+	.	ID=gene-3003;Dbxref=GeneID:3003;Name=PARALOG1_GG;gene=PARALOG1_GG;gene_biotype=protein-coding
+NC_MINIG1.1	RefSeq	mRNA	300	362	.	+	.	ID=rna-XM_100003.1;Parent=gene-3003;Dbxref=GeneID:3003;transcript_id=XM_100003.1;gene=PARALOG1_GG;tag=RefSeq Select
+NC_MINIG1.1	RefSeq	CDS	300	362	.	+	0	ID=cds-XP_100003.1;Parent=rna-XM_100003.1;Dbxref=GeneID:3003;protein_id=XP_100003.1
+NC_MINIG1.1	RefSeq	gene	370	432	.	+	.	ID=gene-3004;Dbxref=GeneID:3004;Name=PARALOG1_GG2;gene=PARALOG1_GG2;gene_biotype=protein-coding
+NC_MINIG1.1	RefSeq	mRNA	370	432	.	+	.	ID=rna-XM_100004.1;Parent=gene-3004;Dbxref=GeneID:3004;transcript_id=XM_100004.1;gene=PARALOG1_GG2;tag=RefSeq Select
+NC_MINIG1.1	RefSeq	CDS	370	432	.	+	0	ID=cds-XP_100004.1;Parent=rna-XM_100004.1;Dbxref=GeneID:3004;protein_id=XP_100004.1
+NC_MINIG1.1	RefSeq	gene	400	462	.	+	.	ID=gene-3005;Dbxref=GeneID:3005;Name=STOP1_GG;gene=STOP1_GG;gene_biotype=protein-coding
+NC_MINIG1.1	RefSeq	mRNA	400	462	.	+	.	ID=rna-XM_100005.1;Parent=gene-3005;Dbxref=GeneID:3005;transcript_id=XM_100005.1;gene=STOP1_GG;tag=RefSeq Select
+NC_MINIG1.1	RefSeq	CDS	400	462	.	+	0	ID=cds-XP_100005.1;Parent=rna-XM_100005.1;Dbxref=GeneID:3005;protein_id=XP_100005.1
+NC_MINIG2.1	RefSeq	gene	500	562	.	-	.	ID=gene-3006;Dbxref=GeneID:3006;Name=NEG1_GG;gene=NEG1_GG;gene_biotype=protein-coding
+NC_MINIG2.1	RefSeq	mRNA	500	562	.	-	.	ID=rna-XM_100006.1;Parent=gene-3006;Dbxref=GeneID:3006;transcript_id=XM_100006.1;gene=NEG1_GG;tag=RefSeq Select
+NC_MINIG2.1	RefSeq	CDS	500	562	.	-	0	ID=cds-XP_100006.1;Parent=rna-XM_100006.1;Dbxref=GeneID:3006;protein_id=XP_100006.1
