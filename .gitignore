@@ -1,0 +1,30 @@
+# Local environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+
+# Large generated NCBI inputs and pipeline outputs
+raw/
+indexes/
+orthology/
+selection/
+qc/
+fastas/
+human_cds_matrices/
+reports/
+logs/
+alignments/
+containers/
+
+# Local NCBI CLI binaries
+bin/datasets
+bin/dataformat
+
+# Packaging outputs
+build/
+dist/
+*.egg-info/

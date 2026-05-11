@@ -1,0 +1,15 @@
+token	taxid	scientific_name	common_name	gcf_accession	outgroup
+human	9606	Homo sapiens	human	GCF_009914755.1	false
+chimpanzee	9598	Pan troglodytes	chimpanzee	GCF_028858775.2	false
+bonobo	9597	Pan paniscus	bonobo	GCF_029289425.2	false
+gorilla	9595	Gorilla gorilla	gorilla	GCF_029281585.2	false
+Sumatran_orangutan	9601	Pongo abelii	Sumatran orangutan	GCF_028885655.2	false
+Bornean_orangutan	9600	Pongo pygmaeus	Bornean orangutan	GCF_028885625.2	false
+siamang_gibbon	9590	Symphalangus syndactylus	siamang gibbon	GCF_028878055.3	false
+crab-eating_macaque	9541	Macaca fascicularis	crab-eating macaque	GCF_037993035.2	false
+pig-tailed_macaque	9545	Macaca nemestrina	pig-tailed macaque	GCF_043159975.1	false
+common_marmoset	9483	Callithrix jacchus	common marmoset	GCF_049354715.1	false
+Bolivian_squirrel_monkey	27679	Saimiri boliviensis	Bolivian squirrel monkey	GCF_048565385.1	false
+sunda_slow_loris	9470	Nycticebus coucang	sunda slow loris	GCF_027406575.1	false
+ring-tailed_lemur	9447	Lemur catta	ring-tailed lemur	GCF_020740605.2	false
+Philippine_flying_lemur	110931	Cynocephalus volans	Philippine flying lemur	GCF_027409185.1	true
