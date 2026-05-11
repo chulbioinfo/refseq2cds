@@ -2,7 +2,7 @@
 
 RefSeq 1:1 orthologs to CDS FASTA files.
 
-Version: `0.1`
+Version: `0.1.1`
 
 Author: Chul Lee (chul.bioinfo@gmail.com)
 
@@ -12,7 +12,9 @@ builder.
 This repository builds strict N-way singleton ortholog CDS FASTA files from
 NCBI RefSeq assembly annotations and NCBI Gene FTP orthology edges. It also
 creates human CDS-position to genomic-position matrices so codon/site-level
-results can later be converted to UCSC Genome Browser BED coordinates.
+results can later be converted to UCSC Genome Browser BED coordinates. It can
+also create lightweight tree-free codon alignments with a MAFFT protein MSA
+followed by PAL2NAL back-translation.
 
 ## Scope
 
@@ -171,6 +173,17 @@ reports/summary.html
 reports/human_cds_position_matrices.summary.json
 ```
 
+Optional MAFFT+PAL2NAL codon alignment outputs:
+
+```text
+alignments/mafft_pal2nal/codon/{REFERENCE_SYMBOL}.codon.fasta
+alignments/mafft_pal2nal/aa/{REFERENCE_SYMBOL}.aa.fasta
+alignments/mafft_pal2nal/aa_aligned/{REFERENCE_SYMBOL}.aa.aln.fasta
+alignments/mafft_pal2nal/manifest.tsv
+alignments/mafft_pal2nal/failed.tsv
+alignments/mafft_pal2nal/summary.json
+```
+
 Each FASTA contains exactly one CDS sequence per locked species. Headers are the locked species
 tokens, such as:
 
@@ -207,6 +220,8 @@ tokens, such as:
 9. Write one `{REFERENCE_SYMBOL}.fasta` per accepted singleton family.
 10. Optionally write one human CDS genomic-position matrix per accepted family
     when `--with-matrices` is used and human is present.
+11. Optionally align each CDS FASTA with `refseq2cds align` using MAFFT for
+    protein MSA and PAL2NAL for codon back-translation.
 
 ## Install
 
@@ -251,6 +266,30 @@ networkx
 pandas
 pyarrow
 ```
+
+Optional alignment tools for `refseq2cds align --mode mafft-pal2nal`:
+
+| Dependency | Purpose |
+|---|---|
+| MAFFT | protein multiple sequence alignment |
+| PAL2NAL (`pal2nal.pl`) | convert protein MSA + CDS FASTA into codon alignment |
+| Perl | runtime for `pal2nal.pl` when installed as a Perl script |
+
+Recommended install with conda/mamba:
+
+```bash
+conda install -c bioconda -c conda-forge mafft pal2nal
+```
+
+On macOS, MAFFT is also available through Homebrew:
+
+```bash
+brew install mafft
+```
+
+Homebrew does not always provide PAL2NAL, so use conda/mamba, a system package
+manager such as `apt install pal2nal` on Debian/Ubuntu, or pass an explicit
+script path with `--pal2nal /path/to/pal2nal.pl`.
 
 Disk requirements depend on the number of input GCF assemblies. The default
 14-assembly run currently uses roughly tens of GB because raw NCBI packages and
@@ -333,6 +372,23 @@ raw/      NCBI bulk files and assembly annotation packages
 indexes/  normalized Parquet/TSV indexes
 fastas/   final singleton CDS FASTA files
 human_cds_matrices/  human CDS-to-genome coordinate matrices
+```
+
+After FASTA generation, create lightweight tree-free codon alignments:
+
+```bash
+refseq2cds align --mode mafft-pal2nal --jobs 4 --threads-per-mafft 2
+```
+
+For downstream site mapping, write an alignment-to-CDS codon map for the human
+sequence:
+
+```bash
+refseq2cds align \
+  --mode mafft-pal2nal \
+  --jobs 4 \
+  --threads-per-mafft 2 \
+  --map-token human
 ```
 
 ## Verify Outputs
@@ -458,6 +514,46 @@ Overwrite existing matrices:
 refseq2cds build-matrices --force
 ```
 
+### Build MAFFT + PAL2NAL Codon Alignments
+
+Run all generated FASTA files:
+
+```bash
+refseq2cds align --mode mafft-pal2nal --jobs 4 --threads-per-mafft 2
+```
+
+Run selected genes:
+
+```bash
+refseq2cds align --mode mafft-pal2nal --symbols BRCA1 TP53 A1BG
+```
+
+Use an explicit PAL2NAL script path:
+
+```bash
+refseq2cds align \
+  --mode mafft-pal2nal \
+  --pal2nal /path/to/pal2nal.pl
+```
+
+Write a human codon map for alignment-site to CDS-site conversion:
+
+```bash
+refseq2cds align --mode mafft-pal2nal --map-token human
+```
+
+Alignment output:
+
+```text
+alignments/mafft_pal2nal/codon/*.codon.fasta
+alignments/mafft_pal2nal/aa/*.aa.fasta
+alignments/mafft_pal2nal/aa_aligned/*.aa.aln.fasta
+alignments/mafft_pal2nal/maps/*.codon_map.tsv.gz
+alignments/mafft_pal2nal/manifest.tsv
+alignments/mafft_pal2nal/failed.tsv
+alignments/mafft_pal2nal/summary.json
+```
+
 ### Print Summary
 
 ```bash
@@ -519,6 +615,7 @@ gzip -dc human_cds_matrices/BRCA1.human_cds_genomic_matrix.tsv.gz | head
 refseq2cds.py
 workflow/scripts/run_cds_pipeline.py
 workflow/scripts/build_human_cds_position_matrices.py
+workflow/scripts/align_mafft_pal2nal.py
 config/species_manifest.tsv
 requirements.txt
 pyproject.toml
@@ -536,6 +633,7 @@ qc/
 fastas/
 human_cds_matrices/
 reports/
+alignments/
 ```
 
 ## Notes And Caveats
@@ -551,5 +649,7 @@ reports/
   `GCF_009914755.1` / T2T-CHM13v2.0, not GRCh38.
 - Terminal stop codons are removed before FASTA/matrix output and recorded in
   metadata.
-- Alignment is not performed by this package yet; the generated FASTA files are
-  ready for PAGAN2/PRANK tree-guided codon-aware alignment.
+- `refseq2cds align --mode mafft-pal2nal` is a lightweight tree-free alignment
+  mode. It is useful for fast baseline codon alignments and site-index mapping,
+  but it is not a replacement for phylogeny-aware PAGAN2/PRANK analyses when a
+  guide tree is central to the study design.

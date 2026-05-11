@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.1.1 - 2026-05-11
+
+### Added
+
+- `refseq2cds align --mode mafft-pal2nal` for lightweight tree-free codon alignment.
+- MAFFT protein-alignment generation from each per-family CDS FASTA.
+- PAL2NAL codon back-translation from the MAFFT protein MSA and original CDS FASTA.
+- Alignment manifest, failure log, summary JSON, per-gene logs, and optional token-specific codon maps.
+- README documentation for optional MAFFT/PAL2NAL dependencies and alignment usage.
+
+### Changed
+
+- Project version bumped to `0.1.1`.
+- README now distinguishes tree-free MAFFT+PAL2NAL baseline alignments from tree-guided PAGAN2/PRANK analyses.
+
 ## v0.1.0 - 2026-05-11
 
 Initial release of `refseq2cds`.

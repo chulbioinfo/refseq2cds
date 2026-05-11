@@ -53,6 +53,7 @@ ROOT = find_project_root()
 DEFAULT_MANIFEST = ROOT / "config" / "species_manifest.tsv"
 RUN_DRIVER = ROOT / "workflow" / "scripts" / "run_cds_pipeline.py"
 MATRIX_DRIVER = ROOT / "workflow" / "scripts" / "build_human_cds_position_matrices.py"
+ALIGN_DRIVER = ROOT / "workflow" / "scripts" / "align_mafft_pal2nal.py"
 
 KNOWN_TAXID_LABELS = {
     9606: ("human", "human"),
@@ -326,6 +327,40 @@ def cmd_build_matrices(args: argparse.Namespace) -> None:
     run(cmd)
 
 
+def cmd_align(args: argparse.Namespace) -> None:
+    require_file(ALIGN_DRIVER, "MAFFT+PAL2NAL alignment driver")
+    if args.mode != "mafft-pal2nal":
+        raise ValueError(f"Unsupported alignment mode: {args.mode}")
+    cmd = [
+        python_executable(),
+        str(ALIGN_DRIVER),
+        "--input-dir",
+        args.input_dir,
+        "--output-dir",
+        args.output_dir,
+        "--mafft",
+        args.mafft,
+        "--pal2nal",
+        args.pal2nal,
+        "--threads-per-mafft",
+        str(args.threads_per_mafft),
+        "--jobs",
+        str(args.jobs),
+        "--codon-table",
+        args.codon_table,
+    ]
+    if args.limit is not None:
+        cmd.extend(["--limit", str(args.limit)])
+    if args.symbols:
+        cmd.append("--symbols")
+        cmd.extend(args.symbols)
+    for token in args.map_token or []:
+        cmd.extend(["--map-token", token])
+    if args.force:
+        cmd.append("--force")
+    run(cmd)
+
+
 def read_tsv(path: Path) -> List[dict]:
     with path.open(newline="") as fh:
         return list(csv.DictReader(fh, delimiter="\t"))
@@ -361,7 +396,7 @@ def count_gzip_tsv_rows(path: Path) -> int:
 
 
 def verify_python_sources() -> None:
-    for path in [RUN_DRIVER, MATRIX_DRIVER, ROOT / "refseq2cds.py"]:
+    for path in [RUN_DRIVER, MATRIX_DRIVER, ALIGN_DRIVER, ROOT / "refseq2cds.py"]:
         require_file(path, "Python source")
         run([python_executable(), "-m", "py_compile", str(path)])
 
@@ -517,6 +552,30 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("build-matrices", help="Build human CDS genomic-position matrices")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_build_matrices)
+
+    p = sub.add_parser("align", help="Build tree-free codon alignments")
+    p.add_argument(
+        "--mode",
+        choices=["mafft-pal2nal"],
+        default="mafft-pal2nal",
+        help="Alignment backend (default: mafft-pal2nal)",
+    )
+    p.add_argument("--input-dir", default=str(ROOT / "fastas"), help="Directory containing refseq2cds FASTA files")
+    p.add_argument(
+        "--output-dir",
+        default=str(ROOT / "alignments" / "mafft_pal2nal"),
+        help="Alignment output directory",
+    )
+    p.add_argument("--mafft", default="mafft", help="MAFFT executable path or command name")
+    p.add_argument("--pal2nal", default="pal2nal.pl", help="PAL2NAL executable path or command name")
+    p.add_argument("--threads-per-mafft", type=int, default=1, help="Threads passed to each MAFFT process")
+    p.add_argument("--jobs", type=int, default=1, help="Number of families to align concurrently")
+    p.add_argument("--limit", type=int, help="Only process the first N selected FASTA files")
+    p.add_argument("--symbols", nargs="*", help="Only process selected symbols/stems; comma-separated values are accepted")
+    p.add_argument("--map-token", action="append", default=[], help="Write alignment-to-CDS codon map for this token")
+    p.add_argument("--codon-table", choices=["universal", "vmitochondria"], default="universal")
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_align)
 
     p = sub.add_parser("verify", help="Verify code and generated outputs")
     p.add_argument("--full", action="store_true", help="Check every FASTA instead of a 200-file sample")
