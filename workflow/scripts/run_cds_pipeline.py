@@ -8,7 +8,7 @@ NCBI_ortholog.plan_20260511.md:
 1. freeze NCBI Gene FTP bulk files
 2. download frozen GCF genome annotation packages
 3. index assembly-exact GFF3/CDS/protein/RNA data
-4. build strict N-way singleton ortholog components from gene_orthologs.gz
+4. build ortholog components from gene_orthologs.gz
 5. select one representative CDS per family/species
 6. QC and write fastas/{HUMAN_SYMBOL}.fasta
 
@@ -57,6 +57,8 @@ QC = PROJECT_ROOT / "qc"
 FASTAS = PROJECT_ROOT / "fastas"
 REPORTS = PROJECT_ROOT / "reports"
 LOGS = PROJECT_ROOT / "logs"
+RESULTS = PROJECT_ROOT / "results"
+GENEID_FILTER_BY_TAXID: Optional[Dict[int, set[int]]] = None
 
 STANDARD_TABLE = unambiguous_dna_by_id[1]
 STOP_CODONS = set(STANDARD_TABLE.stop_codons)
@@ -90,7 +92,7 @@ def configure_paths(
 ) -> None:
     """Configure input/output roots without breaking the repository defaults."""
     global ROOT, OUTPUT_ROOT, MANIFEST, DATASETS
-    global RAW_BULK, RAW_ASSEMBLIES, INDEXES, ORTHOLOGY, SELECTION, QC, FASTAS, REPORTS, LOGS
+    global RAW_BULK, RAW_ASSEMBLIES, INDEXES, ORTHOLOGY, SELECTION, QC, FASTAS, REPORTS, LOGS, RESULTS
 
     OUTPUT_ROOT = Path(output_root).resolve() if output_root else PROJECT_ROOT
     ROOT = OUTPUT_ROOT
@@ -106,6 +108,7 @@ def configure_paths(
     FASTAS = OUTPUT_ROOT / "fastas"
     REPORTS = OUTPUT_ROOT / "reports"
     LOGS = OUTPUT_ROOT / "logs"
+    RESULTS = OUTPUT_ROOT / "results"
 
 
 def rel_path(path: Path) -> str:
@@ -143,6 +146,7 @@ def ensure_dirs() -> None:
         FASTAS,
         REPORTS,
         LOGS,
+        RESULTS,
     ]:
         path.mkdir(parents=True, exist_ok=True)
 
@@ -390,12 +394,20 @@ def stage1_bulk(force: bool = False, offline: bool = False) -> Tuple[Path, Path]
 
 
 def package_done(package_dir: Path) -> bool:
-    return any(package_dir.rglob("dataset_catalog.json")) and any(
-        package_dir.rglob("*.gff")
+    def usable(path: Path) -> bool:
+        return path.is_file() and not any(part.startswith("._") for part in path.parts)
+
+    return any(usable(p) for p in package_dir.rglob("dataset_catalog.json")) and any(
+        usable(p) for p in package_dir.rglob("*.gff")
     )
 
 
-def stage2_download_assemblies(species: List[Species], force: bool = False, offline: bool = False) -> None:
+def stage2_download_assemblies(
+    species: List[Species],
+    force: bool = False,
+    offline: bool = False,
+    include: str = "cds,protein,rna,gff3,seq-report",
+) -> None:
     if offline:
         missing = [sp.token for sp in species if not package_done(RAW_ASSEMBLIES / sp.token)]
         if missing:
@@ -420,7 +432,7 @@ def stage2_download_assemblies(species: List[Species], force: bool = False, offl
                     "accession",
                     sp.gcf_accession,
                     "--include",
-                    "cds,protein,rna,gff3,seq-report",
+                    include,
                     "--filename",
                     str(zip_path),
                     "--no-progressbar",
@@ -576,10 +588,13 @@ def fasta_lengths_and_headers(path: Optional[Path]) -> Tuple[Dict[str, int], Dic
 
 
 def locate_package_files(package_dir: Path) -> Dict[str, Optional[Path]]:
-    files = list(package_dir.rglob("*"))
+    def usable_file(path: Path) -> bool:
+        return path.is_file() and not any(part.startswith("._") for part in path.parts)
+
+    files = [p for p in package_dir.rglob("*") if usable_file(p)]
 
     def choose(predicate) -> Optional[Path]:
-        candidates = sorted([p for p in files if p.is_file() and predicate(p)])
+        candidates = sorted([p for p in files if predicate(p)])
         return candidates[0] if candidates else None
 
     return {
@@ -631,6 +646,7 @@ def parse_gff3(
     token: str,
     taxid: int,
     gene_info: Dict[Tuple[int, int], Dict[str, str]],
+    geneid_filter: Optional[set[int]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     gene_rows: List[Dict[str, Any]] = []
     transcript_rows: List[Dict[str, Any]] = []
@@ -656,6 +672,8 @@ def parse_gff3(
 
             if ftype == "gene":
                 if gid is None:
+                    continue
+                if geneid_filter is not None and gid not in geneid_filter:
                     continue
                 if fid:
                     feature_to_geneid[fid] = gid
@@ -690,6 +708,8 @@ def parse_gff3(
 
             if ftype in {"mRNA", "transcript", "primary_transcript"} or ftype.endswith("RNA"):
                 if parent_geneid is None:
+                    continue
+                if geneid_filter is not None and parent_geneid not in geneid_filter:
                     continue
                 tx_acc = transcript_accession(attrs)
                 select_category = select_category_from_attrs(attrs)
@@ -733,6 +753,8 @@ def parse_gff3(
                         row_gid = transcript_to_geneid[parent]
                     if row_gid is None:
                         continue
+                    if geneid_filter is not None and row_gid not in geneid_filter:
+                        continue
                     tx_acc = transcript_to_acc.get(parent) or transcript_accession(attrs) or ""
                     cds_rows_raw.append(
                         {
@@ -770,6 +792,7 @@ def parse_gff3(
 def build_indexes_for_species(
     sp: Species,
     gene_info: Dict[Tuple[int, int], Dict[str, str]],
+    geneid_filter: Optional[set[int]] = None,
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]], List[Dict[str, Any]]]:
     package_dir = RAW_ASSEMBLIES / sp.token
     files = locate_package_files(package_dir)
@@ -805,7 +828,9 @@ def build_indexes_for_species(
     protein_lengths, protein_headers, _protein_sequences = fasta_lengths_and_headers(files.get("protein"))
     _cds_lengths, cds_headers, cds_sequences = fasta_lengths_and_headers(files.get("cds"))
 
-    gene_rows, transcript_rows, cds_rows = parse_gff3(files["gff3"], sp.token, sp.taxid, gene_info)
+    gene_rows, transcript_rows, cds_rows = parse_gff3(
+        files["gff3"], sp.token, sp.taxid, gene_info, geneid_filter
+    )
 
     # Fill transcript spliced lengths from RNA FASTA when available.
     for row in transcript_rows:
@@ -860,6 +885,8 @@ def build_indexes_for_species(
             continue
         gid = extract_geneid_from_text(header)
         if gid is None:
+            continue
+        if geneid_filter is not None and gid not in geneid_filter:
             continue
         tx_acc = bracket.get("transcript_id") or accession_from_text(header, TRANSCRIPT_RE) or ""
         final_cds_rows.append(
@@ -921,7 +948,12 @@ def stage3_build_indexes(species: List[Species], gene_info_path: Path, force: bo
     all_protein: List[Dict[str, Any]] = []
     for sp in species:
         log(f"Indexing assembly package: {sp.token}")
-        assembly, gene, tx, cds, protein = build_indexes_for_species(sp, gene_info)
+        geneid_filter = (
+            GENEID_FILTER_BY_TAXID.get(sp.taxid)
+            if GENEID_FILTER_BY_TAXID is not None
+            else None
+        )
+        assembly, gene, tx, cds, protein = build_indexes_for_species(sp, gene_info, geneid_filter)
         all_assembly.extend(assembly)
         all_gene.extend(gene)
         all_tx.extend(tx)
@@ -952,14 +984,25 @@ def stage3_build_indexes(species: List[Species], gene_info_path: Path, force: bo
     log("Stage 3 assembly-exact indexes complete")
 
 
-def stage4_orthology_edges(species: List[Species], orth_path: Path, force: bool = False) -> None:
+def stage4_orthology_edges(
+    species: List[Species],
+    orth_path: Path,
+    force: bool = False,
+    reference_taxid_filter: Optional[int] = None,
+) -> None:
     out = ORTHOLOGY / "ortholog_edges.parquet"
     if out.exists() and not force:
         log("Stage 4 orthology edges already exist; skipping")
         return
     target_taxids = {s.taxid for s in species}
     rows: List[Dict[str, Any]] = []
-    log(f"Parsing gene_orthologs.gz for edges internal to {len(target_taxids)} locked taxa")
+    if reference_taxid_filter is not None:
+        log(
+            "Parsing gene_orthologs.gz for edges between "
+            f"reference taxid {reference_taxid_filter} and {len(target_taxids)} locked taxa"
+        )
+    else:
+        log(f"Parsing gene_orthologs.gz for edges internal to {len(target_taxids)} locked taxa")
     with open_text_maybe_gzip(orth_path) as fh:
         reader = csv.DictReader(fh, delimiter="\t")
         if reader.fieldnames and reader.fieldnames[0].startswith("#"):
@@ -974,7 +1017,13 @@ def stage4_orthology_edges(species: List[Species], orth_path: Path, force: bool 
                 gene_b = int(row["Other_GeneID"])
             except Exception:
                 continue
-            if tax_a not in target_taxids or tax_b not in target_taxids:
+            if reference_taxid_filter is not None:
+                if not (
+                    (tax_a == reference_taxid_filter and tax_b in target_taxids)
+                    or (tax_b == reference_taxid_filter and tax_a in target_taxids)
+                ):
+                    continue
+            elif tax_a not in target_taxids or tax_b not in target_taxids:
                 continue
             left = (tax_a, gene_a)
             right = (tax_b, gene_b)
@@ -1004,6 +1053,21 @@ def parse_node(node: str) -> Tuple[int, int]:
     return int(taxid), int(geneid)
 
 
+def existing_orthology_mode(path: Path) -> Optional[str]:
+    if not path.exists():
+        return None
+    try:
+        df = pd.read_parquet(path, columns=["orthology_mode"])
+    except Exception:
+        return None
+    if df.empty or "orthology_mode" not in df.columns:
+        return None
+    modes = {str(x) for x in df["orthology_mode"].dropna().unique()}
+    if len(modes) == 1:
+        return next(iter(modes))
+    return "mixed"
+
+
 def stage5_strict_singletons(
     species: List[Species],
     reference_taxid: int,
@@ -1012,8 +1076,10 @@ def stage5_strict_singletons(
     passed_out = ORTHOLOGY / "strict_singleton.parquet"
     rejected_out = ORTHOLOGY / "rejected.parquet"
     if passed_out.exists() and rejected_out.exists() and not force:
-        log("Stage 5 strict singleton outputs already exist; skipping")
-        return
+        if existing_orthology_mode(passed_out) == "strict_singleton":
+            log("Stage 5 strict singleton outputs already exist; skipping")
+            return
+        log("Stage 5 existing orthology outputs use a different mode; rebuilding strict singleton outputs")
     edges = pd.read_parquet(ORTHOLOGY / "ortholog_edges.parquet")
     gene_index = pd.read_parquet(INDEXES / "gene_index.parquet")
     token_by_taxid = {s.taxid: s.token for s in species}
@@ -1105,6 +1171,10 @@ def stage5_strict_singletons(
                 {
                     "family_id": family_id,
                     "component_id": comp_idx,
+                    "orthology_mode": "strict_singleton",
+                    "family_expected_count": expected_species_count,
+                    "family_min_sequences": expected_species_count,
+                    "query_symbol": reference_symbol,
                     "reference_taxid": reference_taxid,
                     "reference_token": token_by_taxid[reference_taxid],
                     "reference_GeneID": reference_geneid,
@@ -1132,6 +1202,389 @@ def stage5_strict_singletons(
     )
 
 
+def reference_query_dir(symbol: str, geneid: int) -> Path:
+    base = re.sub(r"[^A-Za-z0-9_.-]+", "_", (symbol or f"GeneID_{geneid}").strip()).strip("._")
+    return RESULTS / "reference_gene_1to1" / (base or f"GeneID_{geneid}")
+
+
+def validate_gene_meta(meta: Optional[Dict[str, Any]], *, role: str) -> str:
+    if meta is None:
+        return f"{role}_gene_not_in_gcf_annotation"
+    chrom = str(meta.get("chromosome", ""))
+    gene_type = str(meta.get("type_of_gene", ""))
+    if chrom.upper() in {"MT", "MITOCHONDRION"}:
+        return "mitochondrial_gene"
+    if gene_type and gene_type != "protein-coding":
+        return "non_protein_coding"
+    return ""
+
+
+def resolve_reference_gene(
+    gene_index: pd.DataFrame,
+    reference_taxid: int,
+    reference_symbol: Optional[str],
+    reference_gene_id: Optional[int],
+) -> Dict[str, Any]:
+    ref_genes = gene_index[gene_index["taxid"].astype(int) == int(reference_taxid)].copy()
+    if ref_genes.empty:
+        raise RuntimeError(f"No genes indexed for reference taxid {reference_taxid}")
+
+    if reference_gene_id is not None:
+        matches = ref_genes[ref_genes["GeneID"].astype(int) == int(reference_gene_id)]
+        method = "geneid"
+        query_symbol = reference_symbol or ""
+    elif reference_symbol:
+        query_symbol = reference_symbol
+        matches = ref_genes[ref_genes["symbol"].fillna("") == reference_symbol]
+        method = "symbol_exact"
+        if matches.empty:
+            ci = ref_genes[ref_genes["symbol"].fillna("").str.lower() == reference_symbol.lower()]
+            if len(ci) == 1:
+                matches = ci
+                method = "symbol_case_insensitive_unique"
+    else:
+        raise ValueError("reference_gene_1to1_present_species mode requires --reference-symbol or --reference-gene-id")
+
+    if matches.empty:
+        raise RuntimeError(f"Reference gene not found for taxid {reference_taxid}: {reference_symbol or reference_gene_id}")
+    if len(matches) > 1:
+        genes = ",".join(str(int(x)) for x in matches["GeneID"].tolist())
+        raise RuntimeError(
+            f"Reference symbol is ambiguous in taxid {reference_taxid}: {reference_symbol}; GeneIDs={genes}. "
+            "Use --reference-gene-id."
+        )
+
+    row = matches.iloc[0].to_dict()
+    reason = validate_gene_meta(row, role="reference")
+    if reason:
+        raise RuntimeError(f"Reference gene failed validation: {reason}")
+    return {
+        "reference_taxid": int(reference_taxid),
+        "query_symbol": query_symbol,
+        "resolved_symbol": row.get("symbol") or f"GeneID_{int(row['GeneID'])}",
+        "reference_gene_id": int(row["GeneID"]),
+        "gene_type": row.get("type_of_gene", ""),
+        "chromosome": row.get("chromosome", ""),
+        "resolution_method": method,
+        "status": "pass",
+    }
+
+
+def edge_neighbors(
+    edges: pd.DataFrame,
+    taxid: int,
+    geneid: int,
+    other_taxid: Optional[int] = None,
+) -> set[int]:
+    out: set[int] = set()
+    left = edges[(edges["taxid_a"].astype(int) == int(taxid)) & (edges["GeneID_a"].astype(int) == int(geneid))]
+    if other_taxid is not None:
+        left = left[left["taxid_b"].astype(int) == int(other_taxid)]
+    out.update(int(x) for x in left["GeneID_b"].tolist())
+    right = edges[(edges["taxid_b"].astype(int) == int(taxid)) & (edges["GeneID_b"].astype(int) == int(geneid))]
+    if other_taxid is not None:
+        right = right[right["taxid_a"].astype(int) == int(other_taxid)]
+    out.update(int(x) for x in right["GeneID_a"].tolist())
+    return out
+
+
+def stage5_reference_gene_1to1_present_species(
+    species: List[Species],
+    reference_taxid: int,
+    reference_symbol: Optional[str],
+    reference_gene_id: Optional[int],
+    include_reference: bool,
+    min_sequences: int,
+    force: bool = False,
+) -> None:
+    passed_out = ORTHOLOGY / "strict_singleton.parquet"
+    rejected_out = ORTHOLOGY / "rejected.parquet"
+    if passed_out.exists() and rejected_out.exists() and not force:
+        if existing_orthology_mode(passed_out) == "reference_gene_1to1_present_species":
+            log("Stage 5 reference-gene 1:1 outputs already exist; skipping")
+            return
+        log("Stage 5 existing orthology outputs use a different mode; rebuilding reference-gene 1:1 outputs")
+
+    edges = pd.read_parquet(ORTHOLOGY / "ortholog_edges.parquet")
+    gene_index = pd.read_parquet(INDEXES / "gene_index.parquet")
+    token_by_taxid = {s.taxid: s.token for s in species}
+    species_by_taxid = {s.taxid: s for s in species}
+    all_taxids = {s.taxid for s in species}
+    if reference_taxid not in all_taxids:
+        raise ValueError(f"Reference taxid {reference_taxid} is not present in the manifest")
+
+    gene_meta: Dict[Tuple[int, int], Dict[str, Any]] = {}
+    for row in gene_index.to_dict("records"):
+        gene_meta[(int(row["taxid"]), int(row["GeneID"]))] = row
+
+    ref = resolve_reference_gene(gene_index, reference_taxid, reference_symbol, reference_gene_id)
+    reference_geneid = int(ref["reference_gene_id"])
+    reference_symbol_resolved = str(ref["resolved_symbol"])
+    family_id = f"{reference_symbol_resolved}__{reference_geneid}__reference_1to1"
+    query_dir = reference_query_dir(reference_symbol_resolved, reference_geneid)
+    query_dir.mkdir(parents=True, exist_ok=True)
+
+    pd.DataFrame([ref]).to_csv(query_dir / "reference_gene.tsv", sep="\t", index=False)
+
+    candidate_rows: List[Dict[str, Any]] = []
+    rejected_rows: List[Dict[str, Any]] = []
+    pass_graph_rows: List[Dict[str, Any]] = []
+    passed_rows: List[Dict[str, Any]] = []
+
+    if include_reference:
+        ref_meta = gene_meta.get((reference_taxid, reference_geneid))
+        reason = validate_gene_meta(ref_meta, role="reference")
+        if reason:
+            raise RuntimeError(f"Reference gene failed annotation validation: {reason}")
+        passed_rows.append(
+            {
+                "family_id": family_id,
+                "component_id": 1,
+                "orthology_mode": "reference_gene_1to1_present_species",
+                "family_expected_count": 0,  # filled below after target classification
+                "family_min_sequences": max(1, int(min_sequences)),
+                "reference_included": bool(include_reference),
+                "query_symbol": ref["query_symbol"] or reference_symbol_resolved,
+                "reference_taxid": reference_taxid,
+                "reference_token": token_by_taxid[reference_taxid],
+                "reference_GeneID": reference_geneid,
+                "reference_symbol": reference_symbol_resolved,
+                "human_GeneID": reference_geneid,
+                "human_symbol": reference_symbol_resolved,
+                "taxid": reference_taxid,
+                "token": token_by_taxid[reference_taxid],
+                "GeneID": reference_geneid,
+                "species_symbol": ref_meta.get("symbol", reference_symbol_resolved),
+                "orthology_status": "reference_included",
+                "reject_reason": "",
+            }
+        )
+
+    for sp in species:
+        if sp.taxid == reference_taxid:
+            continue
+        target_genes = edge_neighbors(edges, reference_taxid, reference_geneid, sp.taxid)
+        row_base = {
+            "reference_symbol": reference_symbol_resolved,
+            "reference_gene_id": reference_geneid,
+            "target_taxid": sp.taxid,
+            "target_species_token": sp.token,
+            "target_gene_id": "",
+            "target_gene_count_for_reference": len(target_genes),
+            "reference_gene_count_for_target": "",
+            "edge_direction_summary": "undirected_gene_orthologs",
+        }
+        if len(target_genes) == 0:
+            rejected_rows.append({**row_base, "orthology_status": "reject", "reject_reason": "no_ortholog_edge"})
+            candidate_rows.append({**row_base, "orthology_status": "reject", "reject_reason": "no_ortholog_edge"})
+            continue
+
+        target_ref_counts: Dict[int, set[int]] = {
+            target_gene: edge_neighbors(edges, sp.taxid, target_gene, reference_taxid)
+            for target_gene in target_genes
+        }
+        if len(target_genes) > 1:
+            reason = "one_reference_to_many_targets"
+            if any(len(refs) > 1 for refs in target_ref_counts.values()):
+                reason = "many_to_many_ambiguous"
+            rejected_rows.append(
+                {
+                    **row_base,
+                    "target_gene_id": ",".join(str(g) for g in sorted(target_genes)),
+                    "reference_gene_count_for_target": ",".join(
+                        f"{g}:{len(target_ref_counts[g])}" for g in sorted(target_ref_counts)
+                    ),
+                    "orthology_status": "reject",
+                    "reject_reason": reason,
+                }
+            )
+            candidate_rows.append(rejected_rows[-1])
+            continue
+
+        target_geneid = next(iter(target_genes))
+        reference_genes_for_target = target_ref_counts[target_geneid]
+        row_base["target_gene_id"] = target_geneid
+        row_base["reference_gene_count_for_target"] = len(reference_genes_for_target)
+        if reference_genes_for_target != {reference_geneid}:
+            reason = "many_reference_to_one_target_ambiguous" if len(reference_genes_for_target) > 1 else "inconsistent_ortholog_edge"
+            rejected_rows.append({**row_base, "orthology_status": "reject", "reject_reason": reason})
+            candidate_rows.append(rejected_rows[-1])
+            continue
+
+        meta = gene_meta.get((sp.taxid, target_geneid))
+        reason = validate_gene_meta(meta, role="target")
+        if reason:
+            rejected_rows.append({**row_base, "orthology_status": "reject", "reject_reason": reason})
+            candidate_rows.append(rejected_rows[-1])
+            continue
+
+        pass_row = {**row_base, "orthology_status": "pass_graph_1to1", "reject_reason": ""}
+        candidate_rows.append(pass_row)
+        pass_graph_rows.append(pass_row)
+        passed_rows.append(
+            {
+                "family_id": family_id,
+                "component_id": 1,
+                "orthology_mode": "reference_gene_1to1_present_species",
+                "family_expected_count": 0,  # filled below
+                "family_min_sequences": max(1, int(min_sequences)),
+                "reference_included": bool(include_reference),
+                "query_symbol": ref["query_symbol"] or reference_symbol_resolved,
+                "reference_taxid": reference_taxid,
+                "reference_token": token_by_taxid[reference_taxid],
+                "reference_GeneID": reference_geneid,
+                "reference_symbol": reference_symbol_resolved,
+                "human_GeneID": reference_geneid,
+                "human_symbol": reference_symbol_resolved,
+                "taxid": sp.taxid,
+                "token": token_by_taxid[sp.taxid],
+                "GeneID": target_geneid,
+                "species_symbol": meta.get("symbol", ""),
+                "orthology_status": "pass_graph_1to1",
+                "reject_reason": "",
+            }
+        )
+
+    family_expected_count = len(passed_rows)
+    for row in passed_rows:
+        row["family_expected_count"] = family_expected_count
+
+    passed_df = pd.DataFrame(passed_rows)
+    rejected_df = pd.DataFrame(rejected_rows)
+    candidates_df = pd.DataFrame(candidate_rows)
+    pass_graph_df = pd.DataFrame(pass_graph_rows)
+
+    component_df = pd.DataFrame(
+        [
+            {
+                "component_id": 1,
+                "family_id": family_id,
+                "orthology_mode": "reference_gene_1to1_present_species",
+                "reference_taxid": reference_taxid,
+                "reference_GeneID": reference_geneid,
+                "reference_symbol": reference_symbol_resolved,
+                "manifest_species_count": len(species),
+                "graph_pass_target_species_count": len(pass_graph_df),
+                "included_sequence_candidates": len(passed_df),
+                "rejected_species_count": len(rejected_df),
+            }
+        ]
+    )
+
+    maybe_to_parquet_and_tsv(component_df, ORTHOLOGY / "candidate_components.parquet", ORTHOLOGY / "candidate_components.tsv")
+    maybe_to_parquet_and_tsv(passed_df, passed_out, ORTHOLOGY / "strict_singleton.tsv")
+    maybe_to_parquet_and_tsv(rejected_df, rejected_out, ORTHOLOGY / "rejected.tsv")
+    candidates_df.to_csv(query_dir / "ortholog_candidates.tsv", sep="\t", index=False)
+    pass_graph_df.to_csv(query_dir / "ortholog_pass_graph_1to1.tsv", sep="\t", index=False)
+    rejected_df.to_csv(query_dir / "ortholog_rejected_graph.tsv", sep="\t", index=False)
+    write_json(
+        query_dir / "ortholog_coverage.json",
+        {
+            "reference_symbol": reference_symbol_resolved,
+            "reference_gene_id": reference_geneid,
+            "manifest_species_count": len(species),
+            "graph_pass_target_species_count": len(pass_graph_df),
+            "included_sequence_candidates": len(passed_df),
+            "rejected_reasons": rejected_df["reject_reason"].value_counts().to_dict() if not rejected_df.empty else {},
+        },
+    )
+    log(
+        "Stage 5 reference-gene 1:1 complete: "
+        f"query={reference_symbol_resolved}; included_candidates={len(passed_df):,}; rejected_species={len(rejected_df):,}"
+    )
+
+
+def species_needed_for_reference_gene_mode(
+    species: List[Species],
+    orth_path: Path,
+    info_path: Path,
+    reference_taxid: int,
+    reference_symbol: Optional[str],
+    reference_gene_id: Optional[int],
+) -> List[Species]:
+    """Return the minimal assembly package set for a reference-gene query.
+
+    For single-gene reference mode, downloading every manifest assembly can be
+    unnecessary. NCBI Gene bulk files are enough to identify graph-level 1:1
+    target taxa first; assembly packages are then needed only for the reference
+    species and those graph-passing target species.
+    """
+    global GENEID_FILTER_BY_TAXID
+    target_taxids = {s.taxid for s in species}
+    gene_info = parse_gene_info(info_path, target_taxids)
+    gene_df = pd.DataFrame(
+        [
+            {
+                "taxid": taxid,
+                "GeneID": geneid,
+                **meta,
+            }
+            for (taxid, geneid), meta in gene_info.items()
+        ]
+    )
+    ref = resolve_reference_gene(gene_df, reference_taxid, reference_symbol, reference_gene_id)
+    reference_geneid = int(ref["reference_gene_id"])
+    ref_to_targets: Dict[Tuple[int, int], set[int]] = defaultdict(set)
+    target_to_refs: Dict[Tuple[int, int], set[int]] = defaultdict(set)
+    with open_text_maybe_gzip(orth_path) as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        if reader.fieldnames and reader.fieldnames[0].startswith("#"):
+            reader.fieldnames[0] = reader.fieldnames[0].lstrip("#")
+        for row in reader:
+            if row.get("relationship") != "Ortholog":
+                continue
+            try:
+                tax_a = int(row["tax_id"])
+                gene_a = int(row["GeneID"])
+                tax_b = int(row["Other_tax_id"])
+                gene_b = int(row["Other_GeneID"])
+            except Exception:
+                continue
+            if tax_a == reference_taxid and tax_b in target_taxids:
+                ref_to_targets[(gene_a, tax_b)].add(gene_b)
+                target_to_refs[(tax_b, gene_b)].add(gene_a)
+            elif tax_b == reference_taxid and tax_a in target_taxids:
+                ref_to_targets[(gene_b, tax_a)].add(gene_a)
+                target_to_refs[(tax_a, gene_a)].add(gene_b)
+
+    needed_taxids = {reference_taxid}
+    geneid_filter_by_taxid: Dict[int, set[int]] = {reference_taxid: {reference_geneid}}
+    for sp in species:
+        if sp.taxid == reference_taxid:
+            continue
+        target_genes = ref_to_targets.get((reference_geneid, sp.taxid), set())
+        if len(target_genes) != 1:
+            continue
+        target_geneid = next(iter(target_genes))
+        if target_to_refs.get((sp.taxid, target_geneid), set()) == {reference_geneid}:
+            needed_taxids.add(sp.taxid)
+            geneid_filter_by_taxid.setdefault(sp.taxid, set()).add(target_geneid)
+
+    scoped = [sp for sp in species if sp.taxid in needed_taxids]
+    GENEID_FILTER_BY_TAXID = geneid_filter_by_taxid
+    write_json(
+        REPORTS / "reference_gene_download_scope.json",
+        {
+            "reference_symbol": ref["resolved_symbol"],
+            "reference_gene_id": reference_geneid,
+            "manifest_species_count": len(species),
+            "assembly_packages_needed": len(scoped),
+            "target_taxids_with_graph_1to1": sorted(needed_taxids - {reference_taxid}),
+            "geneids_by_taxid": {
+                str(taxid): sorted(geneids)
+                for taxid, geneids in sorted(geneid_filter_by_taxid.items())
+            },
+            "tokens": [sp.token for sp in scoped],
+        },
+    )
+    log(
+        "Reference-gene mode assembly download scope: "
+        f"{len(scoped):,}/{len(species):,} assemblies "
+        f"for {ref['resolved_symbol']} ({reference_geneid})"
+    )
+    return scoped
+
+
 def select_rank(select_category: str) -> int:
     text = (select_category or "").lower()
     if "mane select" in text:
@@ -1151,6 +1604,25 @@ def accession_rank(cls: str) -> int:
     return 2
 
 
+def family_completion_status(df: pd.DataFrame, count_col: str = "taxid") -> Dict[str, bool]:
+    if df.empty:
+        return {}
+    out: Dict[str, bool] = {}
+    for family_id, fam in df.groupby("family_id", sort=False):
+        mode = str(fam["orthology_mode"].iloc[0]) if "orthology_mode" in fam.columns else "strict_singleton"
+        expected = int(fam["family_expected_count"].iloc[0]) if "family_expected_count" in fam.columns else fam[count_col].nunique()
+        min_sequences = int(fam["family_min_sequences"].iloc[0]) if "family_min_sequences" in fam.columns else expected
+        observed = int(fam[count_col].nunique())
+        reference_taxid = int(fam["reference_taxid"].iloc[0]) if "reference_taxid" in fam.columns else 9606
+        has_reference = ((fam["taxid"].astype(int) == reference_taxid).any()) if "taxid" in fam.columns else True
+        reference_required = bool(fam["reference_included"].iloc[0]) if "reference_included" in fam.columns else True
+        if mode == "reference_gene_1to1_present_species":
+            out[str(family_id)] = bool((has_reference or not reference_required) and observed >= min_sequences)
+        else:
+            out[str(family_id)] = bool(observed == expected)
+    return out
+
+
 def stage6_select_representatives(expected_species_count: int, force: bool = False) -> None:
     out = SELECTION / "representative_cds.parquet"
     if out.exists() and not force:
@@ -1159,7 +1631,7 @@ def stage6_select_representatives(expected_species_count: int, force: bool = Fal
     singleton = pd.read_parquet(ORTHOLOGY / "strict_singleton.parquet")
     cds = pd.read_parquet(INDEXES / "cds_index.parquet")
     if singleton.empty:
-        raise RuntimeError("No strict singleton families found; cannot select CDS")
+        raise RuntimeError("No ortholog families found; cannot select CDS")
     cds["has_sequence"] = cds["cds_sequence"].fillna("").str.len() > 0
     cds["select_rank"] = cds["select_category"].fillna("").map(select_rank)
     cds["accession_rank"] = cds["accession_class"].fillna("unknown").map(accession_rank)
@@ -1229,11 +1701,18 @@ def stage6_select_representatives(expected_species_count: int, force: bool = Fal
 
     selected_df = pd.DataFrame(selected)
     audit_df = pd.DataFrame(audit)
+    if selected_df.empty:
+        selected_df = pd.DataFrame(columns=list(singleton.columns) + ["family_selection_complete"])
 
-    # Keep only families with one selected CDS record for every locked species.
-    counts = selected_df.groupby("family_id")["taxid"].nunique() if not selected_df.empty else pd.Series(dtype=int)
-    complete_families = set(counts[counts == expected_species_count].index)
-    selected_df["family_selection_complete"] = selected_df["family_id"].isin(complete_families)
+    # Strict mode requires every locked species. Reference-gene mode is
+    # species-level: species without usable CDS are excluded while the query
+    # survives if the reference sequence and min sequence count are present.
+    complete_map = family_completion_status(selected_df)
+    complete_families = {fam for fam, ok in complete_map.items() if ok}
+    if "family_id" in selected_df.columns:
+        selected_df["family_selection_complete"] = selected_df["family_id"].astype(str).isin(complete_families)
+    else:
+        selected_df["family_selection_complete"] = False
     maybe_to_parquet_and_tsv(selected_df, out, SELECTION / "representative_cds.tsv")
     maybe_to_parquet_and_tsv(audit_df, SELECTION / "selection_audit.parquet", SELECTION / "selection_audit.tsv")
     log(f"Stage 6 representative CDS complete: complete_families={len(complete_families):,}")
@@ -1314,10 +1793,11 @@ def stage7_cds_qc(expected_species_count: int, force: bool = False) -> None:
     qc_df = pd.DataFrame(qc_rows)
     norm_df = pd.DataFrame(norm_rows)
     if not qc_df.empty:
-        counts = qc_df[qc_df["passed"]].groupby("family_id")["taxid"].nunique()
-        pass_families = set(counts[counts == expected_species_count].index)
-        qc_df["family_cds_qc_passed"] = qc_df["family_id"].isin(pass_families)
-        norm_df["family_cds_qc_passed"] = norm_df["family_id"].isin(pass_families)
+        passed_norm = norm_df[norm_df["passed"] == True].copy()
+        complete_map = family_completion_status(passed_norm)
+        pass_families = {fam for fam, ok in complete_map.items() if ok}
+        qc_df["family_cds_qc_passed"] = qc_df["family_id"].astype(str).isin(pass_families)
+        norm_df["family_cds_qc_passed"] = norm_df["family_id"].astype(str).isin(pass_families)
     maybe_to_parquet_and_tsv(qc_df, out, QC / "cds_qc.tsv")
     maybe_to_parquet_and_tsv(norm_df, norm_out, SELECTION / "representative_cds.normalized.tsv")
     pass_family_count = 0
@@ -1332,7 +1812,26 @@ def stage8_family_sanity(force: bool = False) -> None:
         log("Stage 8 family sanity already exists; skipping")
         return
     norm = pd.read_parquet(SELECTION / "representative_cds.normalized.parquet")
-    norm = norm[norm["family_cds_qc_passed"] == True].copy()
+    if norm.empty or "family_cds_qc_passed" not in norm.columns:
+        df = pd.DataFrame(
+            columns=[
+                "family_id",
+                "reference_symbol",
+                "species_count",
+                "protein_length_min",
+                "protein_length_max",
+                "protein_length_ratio",
+                "cds_length_min",
+                "cds_length_max",
+                "cds_length_ratio",
+                "status",
+                "flags",
+            ]
+        )
+        maybe_to_parquet_and_tsv(df, out, QC / "family_sanity.tsv")
+        log("Stage 8 family sanity complete: families=0")
+        return
+    norm = norm[(norm["family_cds_qc_passed"] == True) & (norm["passed"] == True)].copy()
     rows: List[Dict[str, Any]] = []
     for family_id, fam in norm.groupby("family_id"):
         protein_lengths = pd.to_numeric(fam["protein_length"], errors="coerce").fillna(0)
@@ -1391,8 +1890,30 @@ def stage9_write_fastas(species: List[Species], force: bool = False) -> None:
     sanity = pd.read_parquet(QC / "family_sanity.parquet")
     assembly = pd.read_parquet(INDEXES / "assembly_index.parquet")
     assembly_meta = assembly.set_index("token").to_dict("index")
-    keep_families = set(sanity["family_id"])
-    norm = norm[(norm["family_cds_qc_passed"] == True) & (norm["family_id"].isin(keep_families))].copy()
+    manifest_columns = [
+        "family_id",
+        "orthology_mode",
+        "reference_symbol",
+        "reference_GeneID",
+        "reference_taxid",
+        "reference_token",
+        "human_symbol",
+        "human_GeneID",
+        "fasta_path",
+        "meta_path",
+        "sequence_count",
+        "sanity_status",
+    ]
+    keep_families = set(sanity["family_id"]) if "family_id" in sanity.columns else set()
+    if norm.empty or "family_cds_qc_passed" not in norm.columns or not keep_families:
+        pd.DataFrame(columns=manifest_columns).to_csv(manifest_out, sep="\t", index=False)
+        log("Stage 9 FASTA writing complete: fastas=0")
+        return
+    norm = norm[
+        (norm["family_cds_qc_passed"] == True)
+        & (norm["passed"] == True)
+        & (norm["family_id"].isin(keep_families))
+    ].copy()
     order = [s.token for s in species]
     order_rank = {token: i for i, token in enumerate(order)}
     expected_species_count = len(species)
@@ -1401,7 +1922,8 @@ def stage9_write_fastas(species: List[Species], force: bool = False) -> None:
 
     for family_id, fam in norm.groupby("family_id", sort=False):
         fam = fam.copy()
-        if fam["token"].nunique() != expected_species_count:
+        mode = str(fam["orthology_mode"].iloc[0]) if "orthology_mode" in fam.columns else "strict_singleton"
+        if mode != "reference_gene_1to1_present_species" and fam["token"].nunique() != expected_species_count:
             continue
         reference_symbol = str(
             fam["reference_symbol"].iloc[0]
@@ -1416,12 +1938,21 @@ def stage9_write_fastas(species: List[Species], force: bool = False) -> None:
         reference_taxid = int(fam["reference_taxid"].iloc[0]) if "reference_taxid" in fam.columns else 9606
         reference_token = str(fam["reference_token"].iloc[0]) if "reference_token" in fam.columns else "human"
         base = safe_symbol(reference_symbol)
-        filename = f"{base}.fasta"
+        filename = f"{base}.reference_1to1.cds.fasta" if mode == "reference_gene_1to1_present_species" else f"{base}.fasta"
         if filename in used_names and used_names[filename] != family_id:
-            filename = f"{base}__{reference_geneid}.fasta"
+            if mode == "reference_gene_1to1_present_species":
+                filename = f"{base}__{reference_geneid}.reference_1to1.cds.fasta"
+            else:
+                filename = f"{base}__{reference_geneid}.fasta"
         used_names[filename] = family_id
+        if mode == "reference_gene_1to1_present_species":
+            meta_filename = filename.replace(".reference_1to1.cds.fasta", ".reference_1to1.meta.tsv")
+            rejected_filename = filename.replace(".reference_1to1.cds.fasta", ".reference_1to1.rejected.tsv")
+        else:
+            meta_filename = filename.replace(".fasta", ".meta.tsv")
+            rejected_filename = filename.replace(".fasta", ".rejected.tsv")
         fasta_path = FASTAS / filename
-        meta_path = FASTAS / filename.replace(".fasta", ".meta.tsv")
+        meta_path = FASTAS / meta_filename
         fam["rank"] = fam["token"].map(order_rank)
         fam = fam.sort_values("rank")
         with fasta_path.open("w") as fh:
@@ -1435,6 +1966,7 @@ def stage9_write_fastas(species: List[Species], force: bool = False) -> None:
             meta_rows.append(
                 {
                     "family_id": family_id,
+                    "orthology_mode": mode,
                     "reference_symbol": reference_symbol,
                     "reference_GeneID": reference_geneid,
                     "reference_taxid": reference_taxid,
@@ -1460,9 +1992,20 @@ def stage9_write_fastas(species: List[Species], force: bool = False) -> None:
                 }
             )
         pd.DataFrame(meta_rows).to_csv(meta_path, sep="\t", index=False)
+        if mode == "reference_gene_1to1_present_species":
+            query_dir = reference_query_dir(reference_symbol, reference_geneid)
+            query_dir.mkdir(parents=True, exist_ok=True)
+            result_fasta = query_dir / filename
+            result_meta = query_dir / meta_filename
+            shutil.copyfile(fasta_path, result_fasta)
+            shutil.copyfile(meta_path, result_meta)
+            rejected_path = ORTHOLOGY / "rejected.tsv"
+            if rejected_path.exists():
+                shutil.copyfile(rejected_path, query_dir / rejected_filename)
         manifest_rows.append(
             {
                 "family_id": family_id,
+                "orthology_mode": mode,
                 "reference_symbol": reference_symbol,
                 "reference_GeneID": reference_geneid,
                 "reference_taxid": reference_taxid,
@@ -1476,7 +2019,7 @@ def stage9_write_fastas(species: List[Species], force: bool = False) -> None:
             }
         )
 
-    manifest_df = pd.DataFrame(manifest_rows)
+    manifest_df = pd.DataFrame(manifest_rows, columns=manifest_columns)
     manifest_df.to_csv(manifest_out, sep="\t", index=False)
     log(f"Stage 9 FASTA writing complete: fastas={len(manifest_df):,}")
 
@@ -1501,13 +2044,15 @@ def stage10_report() -> None:
                 if col in df.columns:
                     summary[name][f"unique_{col}"] = int(df[col].nunique())
     manifest = FASTAS / "manifest.tsv"
+    mf = pd.DataFrame()
     if manifest.exists():
         mf = pd.read_csv(manifest, sep="\t")
         summary["fastas"] = {"count": int(len(mf))}
     rejected = ORTHOLOGY / "rejected.parquet"
     if rejected.exists():
         rej = pd.read_parquet(rejected)
-        summary["rejected_reasons"] = rej["reason"].value_counts().to_dict() if not rej.empty else {}
+        reason_col = "reason" if "reason" in rej.columns else "reject_reason"
+        summary["rejected_reasons"] = rej[reason_col].value_counts().to_dict() if (not rej.empty and reason_col in rej.columns) else {}
     qc_path = QC / "cds_qc.parquet"
     if qc_path.exists():
         qc_df = pd.read_parquet(qc_path)
@@ -1517,6 +2062,54 @@ def stage10_report() -> None:
             else {}
         )
     write_json(REPORTS / "summary.json", summary)
+
+    if not mf.empty and "orthology_mode" in mf.columns:
+        ref_mode = mf[mf["orthology_mode"] == "reference_gene_1to1_present_species"]
+        if not ref_mode.empty:
+            selected = pd.read_parquet(SELECTION / "representative_cds.parquet") if (SELECTION / "representative_cds.parquet").exists() else pd.DataFrame()
+            norm = pd.read_parquet(SELECTION / "representative_cds.normalized.parquet") if (SELECTION / "representative_cds.normalized.parquet").exists() else pd.DataFrame()
+            qc = pd.read_parquet(QC / "cds_qc.parquet") if (QC / "cds_qc.parquet").exists() else pd.DataFrame()
+            rejected = pd.read_parquet(ORTHOLOGY / "rejected.parquet") if (ORTHOLOGY / "rejected.parquet").exists() else pd.DataFrame()
+            for row in ref_mode.to_dict("records"):
+                query_dir = reference_query_dir(str(row["reference_symbol"]), int(row["reference_GeneID"]))
+                query_dir.mkdir(parents=True, exist_ok=True)
+                family_id = row["family_id"]
+                if not selected.empty:
+                    selected[selected["family_id"] == family_id].to_csv(query_dir / "selected_cds.tsv", sep="\t", index=False)
+                if not norm.empty:
+                    norm_family = norm[norm["family_id"] == family_id]
+                    norm_family.to_csv(query_dir / "cds_qc_input.tsv", sep="\t", index=False)
+                    norm_family[norm_family["passed"] == True].to_csv(query_dir / "cds_pass.tsv", sep="\t", index=False)
+                    norm_family[norm_family["passed"] != True].to_csv(query_dir / "cds_rejected.tsv", sep="\t", index=False)
+                if not qc.empty:
+                    qc[qc["family_id"] == family_id].to_csv(query_dir / "cds_qc.tsv", sep="\t", index=False)
+                if not rejected.empty:
+                    rejected.to_csv(query_dir / f"{row['reference_symbol']}.reference_1to1.rejected.tsv", sep="\t", index=False)
+                query_summary = {
+                    "generated_at": summary["generated_at"],
+                    "orthology_mode": "reference_gene_1to1_present_species",
+                    "reference_symbol": row["reference_symbol"],
+                    "reference_GeneID": int(row["reference_GeneID"]),
+                    "reference_taxid": int(row["reference_taxid"]),
+                    "manifest_species_count": int(len(read_manifest())),
+                    "final_fasta_sequence_count": int(row["sequence_count"]),
+                    "fasta_path": row["fasta_path"],
+                    "meta_path": row["meta_path"],
+                    "rejected_reasons": rejected["reject_reason"].value_counts().to_dict()
+                    if (not rejected.empty and "reject_reason" in rejected.columns)
+                    else {},
+                    "cds_qc_fail_reasons": qc.loc[~qc["passed"], "fail_reason"].value_counts().to_dict()
+                    if (not qc.empty and "passed" in qc.columns)
+                    else {},
+                }
+                write_json(query_dir / "summary.json", query_summary)
+                (query_dir / "summary.html").write_text(
+                    "<html><head><meta charset='utf-8'><title>Reference Gene 1:1 Summary</title></head><body>"
+                    f"<h1>{row['reference_symbol']} reference-gene 1:1 summary</h1>"
+                    f"<p>Final FASTA sequences: {row['sequence_count']}</p>"
+                    f"<p>FASTA: {row['fasta_path']}</p>"
+                    "</body></html>"
+                )
 
     html = [
         "<html><head><meta charset='utf-8'><title>NCBI Ortholog CDS Summary</title>",
@@ -1575,6 +2168,21 @@ def main() -> None:
         default=9606,
         help="TaxID whose gene symbol is used for family IDs and FASTA filenames (default: 9606, human).",
     )
+    parser.add_argument(
+        "--orthology-mode",
+        choices=["strict_singleton", "reference_gene_1to1_present_species"],
+        default="strict_singleton",
+        help="Orthology parsing mode. strict_singleton keeps only all-species N-way singletons; "
+        "reference_gene_1to1_present_species keeps species with clear 1:1 orthologs to one query gene.",
+    )
+    parser.add_argument("--reference-symbol", help="Reference-species gene symbol for reference_gene_1to1_present_species mode")
+    parser.add_argument("--reference-gene-id", type=int, help="Reference-species NCBI GeneID for reference_gene_1to1_present_species mode")
+    parser.add_argument("--min-sequences", type=int, default=2, help="Minimum sequences required for reference_gene_1to1_present_species output")
+    parser.add_argument(
+        "--exclude-reference",
+        action="store_true",
+        help="Do not include the reference species sequence in reference_gene_1to1_present_species FASTA output",
+    )
     parser.add_argument("--manifest", default=str(MANIFEST), help="Species manifest TSV")
     parser.add_argument("--input-root", help="Input root containing ncbi_bulk/ and assembly_packages/")
     parser.add_argument("--output-root", help="Output root for indexes, reports, FASTA files and QC")
@@ -1611,14 +2219,52 @@ def main() -> None:
     )
     if needs_bulk_downstream and (not orth_path or not info_path):
         orth_path, info_path = stage1_bulk(False, args.offline)
+    assembly_species = species
+    if (
+        args.orthology_mode == "reference_gene_1to1_present_species"
+        and any(step in steps for step in ["assemblies", "indexes", "singletons", "select", "qc", "sanity", "fastas", "report"])
+    ):
+        if not orth_path or not info_path:
+            raise RuntimeError("Reference-gene mode requires NCBI Gene orthology and gene_info bulk files")
+        assembly_species = species_needed_for_reference_gene_mode(
+            species,
+            orth_path,
+            info_path,
+            args.reference_taxid,
+            args.reference_symbol,
+            args.reference_gene_id,
+        )
+    assembly_include = (
+        "cds,gff3,seq-report"
+        if args.orthology_mode == "reference_gene_1to1_present_species"
+        else "cds,protein,rna,gff3,seq-report"
+    )
     if "assemblies" in steps:
-        stage2_download_assemblies(species, args.force, args.offline)
+        stage2_download_assemblies(assembly_species, args.force, args.offline, assembly_include)
     if "indexes" in steps:
-        stage3_build_indexes(species, info_path, args.force)
+        stage3_build_indexes(assembly_species, info_path, args.force)
     if "edges" in steps:
-        stage4_orthology_edges(species, orth_path, args.force)
+        stage4_orthology_edges(
+            species,
+            orth_path,
+            args.force,
+            args.reference_taxid
+            if args.orthology_mode == "reference_gene_1to1_present_species"
+            else None,
+        )
     if "singletons" in steps:
-        stage5_strict_singletons(species, args.reference_taxid, args.force)
+        if args.orthology_mode == "reference_gene_1to1_present_species":
+            stage5_reference_gene_1to1_present_species(
+                species,
+                args.reference_taxid,
+                args.reference_symbol,
+                args.reference_gene_id,
+                not args.exclude_reference,
+                args.min_sequences,
+                args.force,
+            )
+        else:
+            stage5_strict_singletons(species, args.reference_taxid, args.force)
     if "select" in steps:
         stage6_select_representatives(len(species), args.force)
     if "qc" in steps:

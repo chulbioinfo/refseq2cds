@@ -111,8 +111,20 @@ def family_rows_from_manifest(path: Path) -> Dict[str, dict]:
     for row in rows:
         fasta_path = row.get("fasta_path", "")
         if fasta_path:
-            out[Path(fasta_path).stem] = row
+            stem = Path(fasta_path).stem
+            out[stem] = row
+            if row.get("reference_symbol"):
+                out[row["reference_symbol"]] = row
+            if row.get("human_symbol"):
+                out[row["human_symbol"]] = row
     return out
+
+
+def symbol_from_fasta_stem(stem: str) -> str:
+    for suffix in [".reference_1to1.cds", ".cds"]:
+        if stem.endswith(suffix):
+            return stem[: -len(suffix)]
+    return stem
 
 
 def flatten_symbols(values: Optional[Sequence[str]]) -> List[str]:
@@ -123,16 +135,21 @@ def flatten_symbols(values: Optional[Sequence[str]]) -> List[str]:
         for part in value.split(","):
             part = part.strip()
             if part:
-                symbols.append(Path(part).stem)
+                symbols.append(symbol_from_fasta_stem(Path(part).stem))
     return symbols
 
 
 def collect_fastas(input_dir: Path, symbols: Optional[Sequence[str]], limit: Optional[int]) -> List[Path]:
-    candidates = sorted(p for p in input_dir.glob("*.fasta") if p.is_file())
+    candidates = sorted(
+        p
+        for p in input_dir.glob("*.fasta")
+        if p.is_file() and not p.name.startswith("._")
+    )
     wanted = set(flatten_symbols(symbols))
     if wanted:
-        candidates = [p for p in candidates if p.stem in wanted]
-        missing = sorted(wanted - {p.stem for p in candidates})
+        candidates = [p for p in candidates if p.stem in wanted or symbol_from_fasta_stem(p.stem) in wanted]
+        observed = {p.stem for p in candidates} | {symbol_from_fasta_stem(p.stem) for p in candidates}
+        missing = sorted(wanted - observed)
         if missing:
             raise FileNotFoundError(f"Requested symbols not found in {input_dir}: {missing[:10]}")
     if limit is not None:
@@ -355,10 +372,18 @@ def process_one(
         else:
             log_path.write_text(f"# refseq2cds mafft-pal2nal alignment for {stem}\n")
             nuc_records = read_fasta(fasta_path)
-            if expected_tokens and set(nuc_records) != set(expected_tokens):
-                raise ValueError(
-                    f"{fasta_path} IDs do not match manifest tokens: {sorted(set(nuc_records) ^ set(expected_tokens))}"
-                )
+            if expected_tokens:
+                observed_tokens = set(nuc_records)
+                expected_token_set = set(expected_tokens)
+                unknown_tokens = observed_tokens - expected_token_set
+                if unknown_tokens:
+                    raise ValueError(f"{fasta_path} IDs are not in the species manifest: {sorted(unknown_tokens)}")
+                mode = manifest_row.get("orthology_mode", "strict_singleton")
+                if mode != "reference_gene_1to1_present_species" and observed_tokens != expected_token_set:
+                    raise ValueError(
+                        f"{fasta_path} IDs do not match manifest tokens: "
+                        f"{sorted(observed_tokens ^ expected_token_set)}"
+                    )
             aa_records = translate_cds_records(nuc_records)
             write_fasta(aa_records, aa_fasta)
             run_mafft(mafft, threads_per_mafft, aa_fasta, aa_alignment, log_path)

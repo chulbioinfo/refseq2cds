@@ -2,25 +2,30 @@
 
 RefSeq 1:1 orthologs to CDS FASTA files.
 
-Version: `0.1.2`
+Version: `0.1.4`
 
 Author: Chul Lee (chul.bioinfo@gmail.com)
 
 `refseq2cds` is an assembly-exact NCBI RefSeq singleton ortholog CDS FASTA
 builder.
 
-This repository builds strict N-way singleton ortholog CDS FASTA files from
-NCBI RefSeq assembly annotations and NCBI Gene FTP orthology edges. It also
-creates human CDS-position to genomic-position matrices so codon/site-level
-results can later be converted to UCSC Genome Browser BED coordinates. It can
-also create lightweight tree-free codon alignments with a MAFFT protein MSA
-followed by PAL2NAL back-translation.
+This repository builds assembly-exact ortholog CDS FASTA files from NCBI RefSeq
+assembly annotations and NCBI Gene FTP orthology edges. It supports two
+orthology parsing modes: strict N-way singleton extraction across every locked
+species, and a reference-gene present-species mode for queries such as human
+`FOXP2` where only species with an unambiguous 1:1 relationship to the query
+gene are retained. It also creates human CDS-position to genomic-position
+matrices so codon/site-level results can later be converted to UCSC Genome
+Browser BED coordinates. It can also create lightweight tree-free codon
+alignments with a MAFFT protein MSA followed by PAL2NAL back-translation.
+After codon alignment, `refseq2cds variants` can detect target-group-specific
+coding events and write coordinateable nonsynonymous/indel-like events as BED.
 
 `refseq2cds` is not a de novo orthology inference program and it is not just a
 CDS downloader. It treats NCBI Gene orthology records as input evidence, applies
-a strict locked-species singleton filter, selects CDS records from exact RefSeq
-`GCF_*` assembly annotation packages, records rejection reasons, and emits
-auditable FASTA, metadata, report, and coordinate-matrix outputs.
+auditable graph filters, selects CDS records from exact RefSeq `GCF_*` assembly
+annotation packages, records rejection reasons, and emits FASTA, metadata,
+report, and coordinate-matrix outputs.
 
 ## Scope
 
@@ -152,6 +157,47 @@ In this tool, a strict singleton family means:
 
 This conservative filter is why some genes are rejected.
 
+### What is reference-gene present-species mode?
+
+Strict singleton mode is best when you want a genome-wide matrix where every
+output FASTA has the same species set. Sometimes you instead care about one
+reference gene, such as human `FOXP2`, and want every manifest species that has
+a clean ortholog to that gene.
+
+Use:
+
+```bash
+refseq2cds run \
+  --steps all \
+  --orthology-mode reference_gene_1to1_present_species \
+  --reference-taxid 9606 \
+  --reference-symbol FOXP2 \
+  --with-matrices
+```
+
+In this mode, each non-reference species is evaluated independently:
+
+- if the species has no NCBI Gene orthology edge to the reference gene, it is
+  excluded
+- if the reference gene maps to multiple genes in that species, the species is
+  excluded
+- if the target gene maps back to multiple reference-species genes, the species
+  is excluded
+- if the target gene is not present in the locked `GCF_*` annotation package,
+  is non-protein-coding, mitochondrial, lacks a valid CDS, or fails CDS QC, it
+  is excluded
+
+The resulting FASTA therefore contains the reference sequence plus only the
+species that passed the unambiguous 1:1 graph and CDS checks. It does not force
+all manifest species to be present.
+
+For large manifests, reference-gene mode first uses the NCBI Gene bulk files to
+estimate the graph-level 1:1 target species and writes
+`reports/reference_gene_download_scope.json`. Only the reference species and
+graph-passing target species need assembly packages. This saves time for sparse
+queries, but broadly conserved genes such as `FOXP2` can still require hundreds
+of large RefSeq annotation packages.
+
 ## What It Produces
 
 Main CDS outputs:
@@ -160,6 +206,26 @@ Main CDS outputs:
 fastas/{REFERENCE_SYMBOL}.fasta
 fastas/{REFERENCE_SYMBOL}.meta.tsv
 fastas/manifest.tsv
+```
+
+Reference-gene present-species mode additionally writes a per-query directory:
+
+```text
+results/reference_gene_1to1/{REFERENCE_SYMBOL}/
+├── reference_gene.tsv
+├── ortholog_candidates.tsv
+├── ortholog_pass_graph_1to1.tsv
+├── ortholog_rejected_graph.tsv
+├── ortholog_coverage.json
+├── selected_cds.tsv
+├── cds_qc.tsv
+├── cds_pass.tsv
+├── cds_rejected.tsv
+├── {REFERENCE_SYMBOL}.reference_1to1.cds.fasta
+├── {REFERENCE_SYMBOL}.reference_1to1.meta.tsv
+├── {REFERENCE_SYMBOL}.reference_1to1.rejected.tsv
+├── summary.json
+└── summary.html
 ```
 
 Optional human coordinate matrix outputs, when `--with-matrices` is used and
@@ -190,8 +256,11 @@ alignments/mafft_pal2nal/failed.tsv
 alignments/mafft_pal2nal/summary.json
 ```
 
-Each FASTA contains exactly one CDS sequence per locked species. Headers are the locked species
-tokens, such as:
+In strict singleton mode, each FASTA contains exactly one CDS sequence per
+locked species. In reference-gene present-species mode, each FASTA contains the
+reference sequence plus the subset of manifest species that pass the
+unambiguous 1:1 query-gene checks. Headers are the locked species tokens, such
+as:
 
 ```text
 >human
@@ -214,8 +283,11 @@ tokens, such as:
    - sequence report
 3. Parse assembly-exact CDS/transcript/protein/GeneID indexes.
 4. Build the locked-species pairwise orthology graph from `gene_orthologs.gz`.
-5. Keep only connected components with exactly one GeneID
-   per locked taxid.
+5. Apply one orthology parsing mode:
+   - strict singleton: keep only connected components with exactly one GeneID
+     per locked taxid
+   - reference-gene present-species: keep species with exactly one target GeneID
+     linked to the query reference GeneID and no reverse M:1 ambiguity
 6. Reject MT and non-protein-coding genes.
 7. Select one assembly-derived representative CDS per gene/species.
 8. QC CDS sequences:
@@ -427,6 +499,70 @@ After FASTA generation, create lightweight tree-free codon alignments:
 refseq2cds align --mode mafft-pal2nal --jobs 4 --threads-per-mafft 2
 ```
 
+After codon alignment, call target-specific coding events. This example finds
+human-specific events while using human only as the coordinate reference for
+BED conversion:
+
+```bash
+refseq2cds variants \
+  --alignment-dir alignments/mafft_pal2nal \
+  --codon-map-dir alignments/mafft_pal2nal/maps \
+  --matrix-dir human_cds_matrices \
+  --coordinate-reference-token human \
+  --target-token human \
+  --min-background-non-gap 5 \
+  --force
+```
+
+The coordinate reference token is not a privileged biological comparator during
+event calling. The command first compares target states against background
+states after removing outgroup/excluded tokens, then maps only events where the
+coordinate reference has a real mappable CDS base. See
+`docs/variant_detection.md` for the matrix and BED rules.
+
+For indel-like events, this means `target_non_gap_background_gap` is BED-mappable
+when the coordinate reference carries the target-side base, while
+`target_gap_background_non_gap` is BED-mappable when the coordinate reference is
+in the background and carries the base.
+
+### Reference-Gene Query Run
+
+To query one reference gene, for example human `FOXP2`, across the current
+manifest:
+
+```bash
+refseq2cds run \
+  --steps all \
+  --orthology-mode reference_gene_1to1_present_species \
+  --reference-taxid 9606 \
+  --reference-symbol FOXP2 \
+  --with-matrices \
+  --force
+```
+
+If the symbol is ambiguous in the reference species, use the NCBI GeneID
+directly:
+
+```bash
+refseq2cds run \
+  --steps all \
+  --orthology-mode reference_gene_1to1_present_species \
+  --reference-taxid 9606 \
+  --reference-gene-id 93986 \
+  --with-matrices \
+  --force
+```
+
+The default minimum output is two sequences, including the reference sequence.
+Change this with `--min-sequences`. Use `--exclude-reference` only if you want
+the reference sequence omitted from the FASTA; most comparative analyses should
+keep the reference.
+
+With very broad manifests, check disk space before the full assembly-exact run.
+Even though reference-gene mode narrows downloads to graph-level 1:1 candidates,
+conserved genes may still need many GCF annotation packages. The download-scope
+summary is written to `reports/reference_gene_download_scope.json`.
+
 For downstream site mapping, write an alignment-to-CDS codon map for the human
 sequence:
 
@@ -497,6 +633,8 @@ GCF_009914755.1
 GCF_028858775.2
 GCF_029289425.2
 GCF_029281585.2
+GCF_037993035.2-RS_2025_03
+GCF_964374335.1/
 ```
 
 Then generate `config/species_manifest.tsv` automatically and run the pipeline:
@@ -517,8 +655,10 @@ refseq2cds manifest-from-gcf \
 The command queries NCBI Datasets for taxid, organism name, and accession
 metadata. Known species from the default manifest receive readable tokens such
 as `human`, `chimpanzee`, and `bonobo`; other species receive sanitized
-scientific-name tokens. Duplicate taxids are rejected because NCBI Gene
-orthology is taxid/GeneID based.
+scientific-name tokens. Annotation-release suffixes such as `-RS_2025_03` and
+accidental trailing slashes are normalized to the base `GCF_<digits>.<version>`
+accession before querying NCBI.
+Duplicate taxids are rejected because NCBI Gene orthology is taxid/GeneID based.
 
 Important: changing the manifest changes the biological input set. Use
 `refseq2cds run --steps all --force --with-matrices` after generating a new
@@ -636,11 +776,12 @@ tests/                       pytest tests for CLI and mini matrix logic
 CITATION.cff                 citation metadata
 ```
 
-The v0.1.2 conda recipe is pinned to the GitHub release tarball and SHA256. To
-test it locally:
+The conda recipe is pinned to a GitHub release tarball and SHA256. During
+development, update the recipe only after the GitHub tag exists so the final
+release archive checksum can be recorded. To test the current recipe locally:
 
 ```bash
-mamba install -c conda-forge -c bioconda conda-build conda-verify
+mamba install -c conda-forge -c bioconda conda-build
 conda build conda-recipe
 ```
 
@@ -709,6 +850,7 @@ refseq2cds.py
 workflow/scripts/run_cds_pipeline.py
 workflow/scripts/build_human_cds_position_matrices.py
 workflow/scripts/align_mafft_pal2nal.py
+workflow/scripts/call_target_specific_variants.py
 config/species_manifest.tsv
 examples/mini/
 tests/

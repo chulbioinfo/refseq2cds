@@ -8,17 +8,29 @@ __pycache__/
 .DS_Store
 
 # Large generated NCBI inputs and pipeline outputs
+raw
 raw/
+indexes
 indexes/
+orthology
 orthology/
+selection
 selection/
+qc
 qc/
+fastas
 fastas/
+human_cds_matrices
 human_cds_matrices/
+reports
 reports/
+logs
 logs/
+alignments
 alignments/
 containers/
+v*_variant_smoke
+v*_variant_smoke/
 
 # Local NCBI CLI binaries
 bin/datasets
@@ -31,3 +43,5 @@ dist/
 
 # Internal planning notes
 refseq2cds_Bioinformatics_ApplicationNote_plan.md
+refseq2cds_v*_development_plan.md
+refseq2cds_v*_variant_mapping_development_plan.md

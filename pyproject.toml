@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "refseq2cds"
-version = "0.1.2"
+version = "0.1.4"
 description = "Assembly-exact NCBI RefSeq singleton ortholog CDS FASTA and human CDS-position matrix builder."
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "MIT" }
+license = "MIT"
 authors = [
   { name = "Chul Lee", email = "chul.bioinfo@gmail.com" }
 ]
@@ -57,7 +57,8 @@ py-modules = ["refseq2cds"]
 "share/refseq2cds/workflow/scripts" = [
   "workflow/scripts/run_cds_pipeline.py",
   "workflow/scripts/build_human_cds_position_matrices.py",
-  "workflow/scripts/align_mafft_pal2nal.py"
+  "workflow/scripts/align_mafft_pal2nal.py",
+  "workflow/scripts/call_target_specific_variants.py"
 ]
 "share/refseq2cds/examples/mini" = [
   "examples/mini/README.md",

@@ -1,7 +1,8 @@
 # Conda Packaging Notes
 
 `refseq2cds` includes a Bioconda-ready recipe in `conda-recipe/meta.yaml`.
-The v0.1.2 recipe is pinned to the GitHub release tarball:
+The recipe should always be pinned to a GitHub release tarball and SHA256. The
+checked-in recipe currently targets the already tagged v0.1.2 release:
 
 ```text
 https://github.com/chulbioinfo/refseq2cds/archive/refs/tags/v0.1.2.tar.gz
@@ -13,7 +14,7 @@ sha256: 945b7876eb314c5809357bb4067d3934a706641b9d24987b2026a6d7600dd474
 Install conda-build tools:
 
 ```bash
-mamba install -c conda-forge -c bioconda conda-build conda-verify
+mamba install -c conda-forge -c bioconda conda-build
 ```
 
 Build locally:
@@ -40,7 +41,7 @@ NCBI during conda-build.
 
 Before opening a Bioconda pull request, verify:
 
-- the GitHub `v0.1.2` tag and release exist;
+- the GitHub tag and release for the target version exist;
 - `conda-recipe/meta.yaml` has the release tarball URL and SHA256;
 - all run dependencies exist on `conda-forge` or `bioconda`;
 - confirm `refseq2cds test --example mini` passes inside the conda-build test
@@ -48,7 +49,12 @@ Before opening a Bioconda pull request, verify:
 - keep command-line dependencies (`ncbi-datasets-cli`, `mafft`, `pal2nal`) as
   conda run requirements because they are used by normal workflows.
 
-Dependency channels checked for v0.1.2:
+For a new release such as v0.1.4, tag and push the GitHub release first, then
+download `https://github.com/chulbioinfo/refseq2cds/archive/refs/tags/vX.Y.Z.tar.gz`,
+compute the SHA256, update `conda-recipe/meta.yaml`, and run the lint/build
+checks before opening or updating the Bioconda PR.
+
+Dependency channels checked:
 
 | Package | Channel |
 |---|---|

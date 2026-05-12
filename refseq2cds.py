@@ -60,6 +60,7 @@ DEFAULT_MANIFEST = ROOT / "config" / "species_manifest.tsv"
 RUN_DRIVER = ROOT / "workflow" / "scripts" / "run_cds_pipeline.py"
 MATRIX_DRIVER = ROOT / "workflow" / "scripts" / "build_human_cds_position_matrices.py"
 ALIGN_DRIVER = ROOT / "workflow" / "scripts" / "align_mafft_pal2nal.py"
+VARIANT_DRIVER = ROOT / "workflow" / "scripts" / "call_target_specific_variants.py"
 
 KNOWN_TAXID_LABELS = {
     9606: ("human", "human"),
@@ -77,6 +78,8 @@ KNOWN_TAXID_LABELS = {
     9447: ("ring-tailed_lemur", "ring-tailed lemur"),
     110931: ("Philippine_flying_lemur", "Philippine flying lemur"),
 }
+
+GCF_ACCESSION_RE = re.compile(r"(GCF_\d+\.\d+)")
 
 
 def log(message: str) -> None:
@@ -184,6 +187,19 @@ def sanitize_token(value: str) -> str:
     return token or "species"
 
 
+def normalize_gcf_accession(value: str) -> str:
+    """Return the base RefSeq assembly accession from common user inputs.
+
+    Some planning tables append RefSeq annotation-release labels such as
+    ``-RS_2025_03`` or include a trailing slash. The NCBI Datasets genome
+    accession command expects the base ``GCF_<digits>.<version>`` accession.
+    """
+    match = GCF_ACCESSION_RE.search(value.strip())
+    if not match:
+        raise ValueError(f"Could not parse a RefSeq GCF accession from: {value!r}")
+    return match.group(1)
+
+
 def collect_gcfs(args: argparse.Namespace) -> List[str]:
     gcfs: List[str] = []
     if args.inputfile:
@@ -192,8 +208,8 @@ def collect_gcfs(args: argparse.Namespace) -> List[str]:
                 text = line.strip()
                 if not text or text.startswith("#"):
                     continue
-                gcfs.append(text.split()[0])
-    gcfs.extend(args.gcfs or [])
+                gcfs.append(normalize_gcf_accession(text.split()[0]))
+    gcfs.extend(normalize_gcf_accession(gcf) for gcf in (args.gcfs or []))
     seen = set()
     unique = []
     for gcf in gcfs:
@@ -326,17 +342,35 @@ def cmd_run(args: argparse.Namespace) -> None:
     manifest = Path(args.manifest).resolve() if args.manifest else default_manifest_path()
     output_root = Path(args.output_root).resolve() if args.output_root else Path.cwd().resolve()
     snapshot = output_root / "reports" / "run_manifest_snapshot.tsv"
+    config_snapshot = output_root / "reports" / "run_config_snapshot.json"
     if snapshot.exists() and manifest.exists() and not args.force:
         if snapshot.read_text() != manifest.read_text():
             raise RuntimeError(
                 f"{manifest} differs from the manifest used for existing outputs. "
                 "Run with --force to rebuild all stages for the new GCF set."
             )
+    current_config = {
+        "orthology_mode": args.orthology_mode,
+        "reference_taxid": int(args.reference_taxid),
+        "reference_symbol": args.reference_symbol or "",
+        "reference_gene_id": args.reference_gene_id,
+        "min_sequences": int(args.min_sequences) if args.min_sequences is not None else None,
+        "exclude_reference": bool(args.exclude_reference),
+    }
+    if config_snapshot.exists() and not args.force:
+        previous_config = json.loads(config_snapshot.read_text())
+        if previous_config != current_config:
+            raise RuntimeError(
+                f"{config_snapshot} differs from the requested run configuration. "
+                "Run with --force to rebuild outputs for the new orthology/reference settings."
+            )
     cmd = [
         python_executable(),
         str(RUN_DRIVER),
         "--steps",
         args.steps,
+        "--orthology-mode",
+        args.orthology_mode,
         "--reference-taxid",
         str(args.reference_taxid),
         "--manifest",
@@ -352,10 +386,20 @@ def cmd_run(args: argparse.Namespace) -> None:
         cmd.append("--offline")
     if args.force:
         cmd.append("--force")
+    if args.reference_symbol:
+        cmd.extend(["--reference-symbol", args.reference_symbol])
+    if args.reference_gene_id is not None:
+        cmd.extend(["--reference-gene-id", str(args.reference_gene_id)])
+    if args.min_sequences is not None:
+        cmd.extend(["--min-sequences", str(args.min_sequences)])
+    if args.exclude_reference:
+        cmd.append("--exclude-reference")
     run(cmd)
     if manifest.exists():
         snapshot.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(manifest, snapshot)
+    config_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    config_snapshot.write_text(json.dumps(current_config, indent=2, sort_keys=True) + "\n")
     if args.with_matrices:
         if manifest_has_taxid(9606, manifest):
             matrix_args = argparse.Namespace(
@@ -391,13 +435,29 @@ def cmd_align(args: argparse.Namespace) -> None:
     require_file(ALIGN_DRIVER, "MAFFT+PAL2NAL alignment driver")
     if args.mode != "mafft-pal2nal":
         raise ValueError(f"Unsupported alignment mode: {args.mode}")
+    input_dir = Path(args.input_dir).resolve()
+    fasta_manifest = (
+        Path(args.fasta_manifest).resolve()
+        if args.fasta_manifest
+        else (input_dir / "manifest.tsv").resolve()
+    )
+    default_species_manifest = input_dir.parent / "reports" / "run_manifest_snapshot.tsv"
+    species_manifest = (
+        Path(args.species_manifest).resolve()
+        if args.species_manifest
+        else (default_species_manifest.resolve() if default_species_manifest.exists() else default_manifest_path())
+    )
     cmd = [
         python_executable(),
         str(ALIGN_DRIVER),
         "--input-dir",
-        args.input_dir,
+        str(input_dir),
         "--output-dir",
         args.output_dir,
+        "--fasta-manifest",
+        str(fasta_manifest),
+        "--species-manifest",
+        str(species_manifest),
         "--mafft",
         args.mafft,
         "--pal2nal",
@@ -416,6 +476,68 @@ def cmd_align(args: argparse.Namespace) -> None:
         cmd.extend(args.symbols)
     for token in args.map_token or []:
         cmd.extend(["--map-token", token])
+    if args.force:
+        cmd.append("--force")
+    run(cmd)
+
+
+def cmd_variants(args: argparse.Namespace) -> None:
+    require_file(VARIANT_DRIVER, "target-specific variant driver")
+    cmd = [
+        python_executable(),
+        str(VARIANT_DRIVER),
+        "--alignment-dir",
+        args.alignment_dir,
+        "--matrix-dir",
+        args.matrix_dir,
+        "--output-dir",
+        args.output_dir,
+        "--coordinate-reference-token",
+        args.coordinate_reference_token,
+        "--target-state-mode",
+        args.target_state_mode,
+        "--min-target-non-gap",
+        args.min_target_non_gap,
+        "--max-target-gap-fraction-for-substitution",
+        str(args.max_target_gap_fraction_for_substitution),
+        "--min-background-non-gap",
+        str(args.min_background_non_gap),
+        "--min-background-gap-fraction-for-target-non-gap-event",
+        str(args.min_background_gap_fraction_for_target_non_gap_event),
+        "--min-background-non-gap-fraction-for-target-gap-event",
+        str(args.min_background_non_gap_fraction_for_target_gap_event),
+        "--min-target-non-gap-fraction",
+        str(args.min_target_non_gap_fraction),
+        "--min-target-gap-fraction",
+        str(args.min_target_gap_fraction),
+        "--bed-mode",
+        args.bed_mode,
+        "--codon-table",
+        args.codon_table,
+    ]
+    if args.codon_map_dir:
+        cmd.extend(["--codon-map-dir", args.codon_map_dir])
+    if args.reference_token:
+        cmd.extend(["--reference-token", args.reference_token])
+    for token in args.target_token or []:
+        cmd.extend(["--target-token", token])
+    if args.target_tokens_file:
+        cmd.extend(["--target-tokens-file", args.target_tokens_file])
+    for token in args.outgroup_token or []:
+        cmd.extend(["--outgroup-token", token])
+    if args.outgroup_tokens_file:
+        cmd.extend(["--outgroup-tokens-file", args.outgroup_tokens_file])
+    for token in args.exclude_token or []:
+        cmd.extend(["--exclude-token", token])
+    if args.exclude_tokens_file:
+        cmd.extend(["--exclude-tokens-file", args.exclude_tokens_file])
+    if args.symbols:
+        cmd.append("--symbols")
+        cmd.extend(args.symbols)
+    if args.symbols_file:
+        cmd.extend(["--symbols-file", args.symbols_file])
+    if args.limit is not None:
+        cmd.extend(["--limit", str(args.limit)])
     if args.force:
         cmd.append("--force")
     run(cmd)
@@ -455,7 +577,12 @@ def cmd_test(args: argparse.Namespace) -> None:
         output_root = Path(tempfile.mkdtemp(prefix="refseq2cds_mini_"))
     run_args = argparse.Namespace(
         steps="all",
+        orthology_mode="strict_singleton",
         reference_taxid=9606,
+        reference_symbol=None,
+        reference_gene_id=None,
+        min_sequences=2,
+        exclude_reference=False,
         manifest=str(manifest),
         input_root=str(input_root),
         output_root=str(output_root),
@@ -507,7 +634,7 @@ def count_gzip_tsv_rows(path: Path) -> int:
 
 
 def verify_python_sources() -> None:
-    for path in [RUN_DRIVER, MATRIX_DRIVER, ALIGN_DRIVER, Path(__file__).resolve()]:
+    for path in [RUN_DRIVER, MATRIX_DRIVER, ALIGN_DRIVER, VARIANT_DRIVER, Path(__file__).resolve()]:
         require_file(path, "Python source")
         run([python_executable(), "-m", "py_compile", str(path)])
 
@@ -522,7 +649,11 @@ def verify_fastas(full: bool, output_root: Path, species_manifest: Path) -> dict
     manifest_path = output_root / "fastas" / "manifest.tsv"
     require_file(manifest_path, "FASTA manifest")
     rows = read_tsv(manifest_path)
-    fasta_files = sorted((output_root / "fastas").glob("*.fasta"))
+    fasta_files = sorted(
+        p
+        for p in (output_root / "fastas").glob("*.fasta")
+        if not p.name.startswith("._")
+    )
     expected_tokens = manifest_tokens(species_manifest)
     expected_count = len(expected_tokens)
     if len(rows) != len(fasta_files):
@@ -532,7 +663,12 @@ def verify_fastas(full: bool, output_root: Path, species_manifest: Path) -> dict
     for row in check_rows:
         fasta_path = output_root / row["fasta_path"]
         count, headers = count_fasta_records(fasta_path)
-        if count != expected_count or headers != expected_tokens:
+        mode = row.get("orthology_mode", "strict_singleton")
+        if mode == "reference_gene_1to1_present_species":
+            manifest_count = int(row.get("sequence_count", count))
+            if count != manifest_count or not headers.issubset(expected_tokens):
+                bad.append((row["fasta_path"], count, sorted(headers - expected_tokens)))
+        elif count != expected_count or headers != expected_tokens:
             bad.append((row["fasta_path"], count, sorted(headers ^ expected_tokens)))
     if bad:
         raise AssertionError(f"Bad FASTA files: {bad[:5]}")
@@ -548,7 +684,11 @@ def verify_matrices(mode: str, output_root: Path) -> dict:
     manifest_path = output_root / "human_cds_matrices" / "manifest.tsv"
     require_file(manifest_path, "human CDS matrix manifest")
     rows = read_tsv(manifest_path)
-    matrix_files = sorted((output_root / "human_cds_matrices").glob("*.human_cds_genomic_matrix.tsv.gz"))
+    matrix_files = sorted(
+        p
+        for p in (output_root / "human_cds_matrices").glob("*.human_cds_genomic_matrix.tsv.gz")
+        if not p.name.startswith("._")
+    )
     failed_path = output_root / "human_cds_matrices" / "failed.tsv"
     require_file(failed_path, "human CDS matrix failure log")
     failed_rows = max(0, sum(1 for _ in failed_path.open()) - 1)
@@ -652,11 +792,21 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="Run the CDS pipeline")
     p.add_argument("--steps", default="all", help="Pipeline steps, comma-separated, or all")
     p.add_argument(
+        "--orthology-mode",
+        choices=["strict_singleton", "reference_gene_1to1_present_species"],
+        default="strict_singleton",
+        help="Orthology mode: strict all-species singleton extraction or reference-gene present-species 1:1 extraction",
+    )
+    p.add_argument(
         "--reference-taxid",
         type=int,
         default=9606,
         help="TaxID whose gene symbol is used for family IDs and FASTA filenames (default: 9606)",
     )
+    p.add_argument("--reference-symbol", help="Reference-species gene symbol for reference_gene_1to1_present_species mode")
+    p.add_argument("--reference-gene-id", type=int, help="Reference-species NCBI GeneID for reference_gene_1to1_present_species mode")
+    p.add_argument("--min-sequences", type=int, default=2, help="Minimum sequences required in reference-gene mode")
+    p.add_argument("--exclude-reference", action="store_true", help="Exclude the reference sequence in reference-gene mode")
     p.add_argument(
         "--manifest",
         help="Species manifest TSV; defaults to ./config/species_manifest.tsv if present, otherwise the packaged default manifest",
@@ -695,6 +845,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--mafft", default="mafft", help="MAFFT executable path or command name")
     p.add_argument("--pal2nal", default="pal2nal.pl", help="PAL2NAL executable path or command name")
+    p.add_argument(
+        "--fasta-manifest",
+        help="FASTA manifest TSV; defaults to <input-dir>/manifest.tsv",
+    )
+    p.add_argument(
+        "--species-manifest",
+        help="Species manifest TSV; defaults to <input-dir>/../reports/run_manifest_snapshot.tsv when present",
+    )
     p.add_argument("--threads-per-mafft", type=int, default=1, help="Threads passed to each MAFFT process")
     p.add_argument("--jobs", type=int, default=1, help="Number of families to align concurrently")
     p.add_argument("--limit", type=int, help="Only process the first N selected FASTA files")
@@ -703,6 +861,46 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--codon-table", choices=["universal", "vmitochondria"], default="universal")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_align)
+
+    p = sub.add_parser("variants", help="Call target-specific coding events and map coordinateable events to BED")
+    p.add_argument(
+        "--alignment-dir",
+        default=str(Path.cwd() / "alignments" / "final"),
+        help="Directory containing codon-aware alignments, or an aligner output directory with a codon/ subdirectory",
+    )
+    p.add_argument(
+        "--codon-map-dir",
+        help="Directory containing {SYMBOL}.{TOKEN}.codon_map.tsv.gz files; defaults to maps near --alignment-dir",
+    )
+    p.add_argument("--matrix-dir", default=str(Path.cwd() / "human_cds_matrices"))
+    p.add_argument("--output-dir", default=str(Path.cwd() / "variants"))
+    p.add_argument(
+        "--coordinate-reference-token",
+        default="human",
+        help="Token used only for CDS/genome coordinate mapping, not as a privileged event comparator",
+    )
+    p.add_argument("--reference-token", help="Deprecated alias for --coordinate-reference-token")
+    p.add_argument("--target-token", action="append", default=[], help="Target token; may be used more than once")
+    p.add_argument("--target-tokens-file", help="File containing target tokens")
+    p.add_argument("--outgroup-token", action="append", default=[], help="Outgroup token excluded from event calling")
+    p.add_argument("--outgroup-tokens-file", help="File containing outgroup tokens")
+    p.add_argument("--exclude-token", action="append", default=[], help="Token excluded from event calling")
+    p.add_argument("--exclude-tokens-file", help="File containing excluded tokens")
+    p.add_argument("--target-state-mode", choices=["uniform", "allow-diverse"], default="uniform")
+    p.add_argument("--min-target-non-gap", default="all")
+    p.add_argument("--max-target-gap-fraction-for-substitution", type=float, default=0.0)
+    p.add_argument("--min-background-non-gap", type=int, default=5)
+    p.add_argument("--min-background-gap-fraction-for-target-non-gap-event", type=float, default=0.8)
+    p.add_argument("--min-background-non-gap-fraction-for-target-gap-event", type=float, default=0.8)
+    p.add_argument("--min-target-non-gap-fraction", type=float, default=1.0)
+    p.add_argument("--min-target-gap-fraction", type=float, default=1.0)
+    p.add_argument("--bed-mode", choices=["auto", "all-coordinateable", "substitution-only", "none"], default="auto")
+    p.add_argument("--codon-table", choices=["universal", "vmitochondria"], default="universal")
+    p.add_argument("--symbols", nargs="*", help="Only process selected symbols/stems; comma-separated values are accepted")
+    p.add_argument("--symbols-file", help="File containing symbols to process")
+    p.add_argument("--limit", type=int)
+    p.add_argument("--force", action="store_true")
+    p.set_defaults(func=cmd_variants)
 
     p = sub.add_parser("verify", help="Verify code and generated outputs")
     p.add_argument(

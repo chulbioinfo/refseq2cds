@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.1.4 - 2026-05-11
+
+### Added
+
+- `refseq2cds variants` for target-group versus background-group comparative coding event detection from codon-aware alignments.
+- Target-specific amino acid substitution and alignment-relative indel-like event outputs.
+- Nonsynonymous nucleotide component extraction for target-exclusive amino acid substitution events.
+- Coordinate-reference mapping from alignment codon positions through codon maps and CDS-to-genome matrices to BED6.
+- `--target-state-mode uniform` default and `--target-state-mode allow-diverse` for diverse target groups.
+- Outgroup and exclude token handling for event calling.
+- Variant matrix, per-gene event tables, BED outputs, summary, failure log, and tests.
+
+### Changed
+
+- Project version bumped to `0.1.4`.
+- The coordinate reference token is explicitly used only for coordinate mapping and is not a privileged biological comparator.
+
+## v0.1.3 - 2026-05-11
+
+### Added
+
+- `reference_gene_1to1_present_species` orthology mode for single reference-gene queries such as human `FOXP2`.
+- Reference-gene graph filtering that keeps species with one unambiguous target GeneID and excludes no-edge, 1:M, M:1, M:M, non-coding, mitochondrial, missing-annotation, and invalid-CDS cases.
+- Per-query output directories under `results/reference_gene_1to1/{REFERENCE_SYMBOL}/` with candidate, pass, rejection, CDS selection, QC, FASTA, metadata, and summary files.
+- CLI options for `--reference-symbol`, `--reference-gene-id`, `--min-sequences`, and `--exclude-reference`.
+- Tests for present-species reference-gene extraction, missing target species, and one-reference-to-many-target rejection.
+
+### Changed
+
+- Project version bumped to `0.1.3`.
+- FASTA verification now accepts subset species only for reference-gene present-species outputs while keeping strict full-manifest checks for strict singleton mode.
+- Run configuration snapshots now prevent accidental reuse of old outputs when orthology mode or reference-gene settings change without `--force`.
+- `pyproject.toml` now uses SPDX-style `license = "MIT"` for cleaner package builds.
+
 ## v0.1.2 - 2026-05-11
 
 ### Added
