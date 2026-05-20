@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "refseq2cds"
-version = "0.1.4"
-description = "Assembly-exact NCBI RefSeq singleton ortholog CDS FASTA and human CDS-position matrix builder."
+version = "0.1.5"
+description = "Assembly-exact RefSeq ortholog CDS FASTA, coordinate matrix, codon alignment, and variant workflow."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"

@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-Target-vs-background comparative CDS event scanner.
+Target-vs-background comparative CDS variant scanner.
 
 This driver consumes codon-aware alignments, alignment-to-CDS codon maps, and a
 coordinate-reference CDS-to-genome matrix. It calls target-group-specific amino
-acid events by comparing target states only against background states; the
-coordinate reference is used only for coordinate mapping and BED output.
+acid variants by requiring mutually exclusive target and background amino acid
+state sets; the coordinate reference is used only for coordinate mapping and
+BED output.
 """
 
 from __future__ import annotations
@@ -160,6 +161,10 @@ class CodonState:
     def is_gap(self) -> bool:
         return self.status == "full_gap"
 
+    @property
+    def is_informative_aa(self) -> bool:
+        return self.status in {"valid_codon", "full_gap"}
+
 
 def classify_codon(token: str, codon: str, table) -> CodonState:
     codon = codon.upper().replace("U", "T")
@@ -202,14 +207,18 @@ class GroupStats:
 
     @property
     def aa_set(self) -> Set[str]:
-        return {s.aa for s in self.valid}
+        return {s.aa for s in self.informative}
 
     @property
     def codon_set(self) -> Set[str]:
-        return {s.codon for s in self.valid}
+        return {s.codon for s in self.informative}
+
+    @property
+    def informative(self) -> List[CodonState]:
+        return [s for s in self.states if s.is_informative_aa]
 
     def nt_set(self, offset_1based: int) -> Set[str]:
-        return {s.codon[offset_1based - 1] for s in self.valid}
+        return {s.codon[offset_1based - 1] for s in self.informative}
 
     @property
     def gap_fraction(self) -> float:
@@ -421,6 +430,7 @@ def group_stats_rows(stats: GroupStats, prefix: str) -> Dict[str, str]:
     return {
         f"{prefix}_count": str(stats.count),
         f"{prefix}_valid_count": str(len(stats.valid)),
+        f"{prefix}_informative_count": str(len(stats.informative)),
         f"{prefix}_gap_count": str(len(stats.gaps)),
         f"{prefix}_ambiguous_count": str(len(stats.ambiguous)),
         f"{prefix}_state_set": state_csv(stats.aa_set),
@@ -515,6 +525,7 @@ AA_EVENT_COLUMNS = [
     "aln_nt_end_1based",
     "target_count",
     "target_valid_count",
+    "target_informative_count",
     "target_gap_count",
     "target_ambiguous_count",
     "target_state_set",
@@ -522,6 +533,7 @@ AA_EVENT_COLUMNS = [
     "target_uniform",
     "background_count",
     "background_valid_count",
+    "background_informative_count",
     "background_gap_count",
     "background_ambiguous_count",
     "background_state_set",
@@ -598,7 +610,7 @@ def make_event_id(n: int) -> str:
     return f"event_{n:06d}"
 
 
-def call_substitution(
+def call_aa_variant(
     event_id: str,
     family_id: str,
     symbol: str,
@@ -610,43 +622,30 @@ def call_substitution(
     coord_state: Optional[CodonState],
     target_state_mode: str,
     bed_mode: str,
-    min_target_non_gap: int,
-    min_background_non_gap: int,
-    max_target_gap_fraction: float,
+    min_target_informative: int,
+    min_background_informative: int,
 ) -> Optional[Event]:
-    if len(target_stats.valid) < min_target_non_gap:
+    if len(target_stats.informative) < min_target_informative:
         return None
-    if target_stats.gap_fraction > max_target_gap_fraction:
-        return None
-    if len(background_stats.valid) < min_background_non_gap:
+    if len(background_stats.informative) < min_background_informative:
         return None
     if not target_stats.aa_set:
         return None
-    if target_state_mode == "uniform" and len(target_stats.aa_set) != 1:
+    if not background_stats.aa_set:
         return None
     if target_stats.aa_set & background_stats.aa_set:
         return None
-    subtype = (
-        "target_exclusive_uniform_state"
-        if target_state_mode == "uniform"
-        else "target_exclusive_diverse_state"
-    )
+    subtype = "identical_sequence" if len(target_stats.aa_set) == 1 else "divergent_sequence"
     target_aa = state_csv(target_stats.aa_set)
     bg_aa = state_csv(background_stats.aa_set)
-    codon_class = "nonsynonymous_multi_nt"
-    if len(target_stats.codon_set) == 1 and len(background_stats.codon_set) == 1:
-        target_codon = next(iter(target_stats.codon_set))
-        bg_codon = next(iter(background_stats.codon_set))
-        diff_count = sum(1 for a, b in zip(target_codon, bg_codon) if a != b)
-        codon_class = "nonsynonymous_single_nt" if diff_count == 1 else "nonsynonymous_multi_nt"
-    elif len(target_stats.codon_set) > 1:
-        codon_class = "complex_or_polymorphic"
+    codon_class = "aa_mutually_exclusive_variant"
+    is_nonsynonymous = "-" not in target_stats.aa_set and "-" not in background_stats.aa_set
     return Event(
         event_id=event_id,
         family_id=family_id,
         symbol=symbol,
         source_alignment_file=source_alignment_file,
-        event_type="aa_substitution",
+        event_type="aa_variant",
         event_subtype=subtype,
         target_state_mode=target_state_mode,
         bed_mode=bed_mode,
@@ -660,110 +659,11 @@ def call_substitution(
         background_state_set=set(background_stats.aa_set),
         target_codon_state_set=set(target_stats.codon_set),
         background_codon_state_set=set(background_stats.codon_set),
-        is_nonsynonymous=True,
+        event_call_basis="target_vs_background_mutually_exclusive_aa_state",
+        is_nonsynonymous=is_nonsynonymous,
         codon_change_class=codon_class,
         aa_change_label=f"target:{target_aa}|background:{bg_aa}",
     )
-
-
-def classify_indel_candidate(
-    target_stats: GroupStats,
-    background_stats: GroupStats,
-    target_state_mode: str,
-    min_target_non_gap_fraction: float,
-    min_target_gap_fraction: float,
-    min_background_gap_fraction: float,
-    min_background_non_gap_fraction: float,
-    min_background_non_gap: int,
-) -> Optional[str]:
-    if (
-        target_stats.non_gap_fraction >= min_target_non_gap_fraction
-        and background_stats.gap_fraction >= min_background_gap_fraction
-        and not target_stats.ambiguous
-    ):
-        if target_state_mode == "allow-diverse" or len(target_stats.aa_set) <= 1:
-            return "target_non_gap_background_gap"
-    if (
-        target_stats.gap_fraction >= min_target_gap_fraction
-        and background_stats.non_gap_fraction >= min_background_non_gap_fraction
-        and len(background_stats.valid) >= min_background_non_gap
-    ):
-        return "target_gap_background_non_gap"
-    return None
-
-
-def make_indel_event(
-    event_id: str,
-    family_id: str,
-    symbol: str,
-    source_alignment_file: str,
-    subtype: str,
-    segment: List[Tuple[int, GroupStats, GroupStats, GroupStats, Optional[CodonState]]],
-    target_state_mode: str,
-    bed_mode: str,
-) -> Event:
-    target_states = [s for _idx, t, _b, _o, _c in segment for s in t.valid]
-    bg_states = [s for _idx, _t, b, _o, _c in segment for s in b.valid]
-    target_gap_count = sum(len(t.gaps) for _idx, t, _b, _o, _c in segment)
-    bg_gap_count = sum(len(b.gaps) for _idx, _t, b, _o, _c in segment)
-    target_agg = GroupStats(segment[0][1].tokens, target_states + [CodonState("", "---", "full_gap", "-")] * target_gap_count)
-    bg_agg = GroupStats(segment[0][2].tokens, bg_states + [CodonState("", "---", "full_gap", "-")] * bg_gap_count)
-    out_agg = GroupStats(segment[0][3].tokens, [s for _idx, _t, _b, o, _c in segment for s in o.states])
-    subtype_label = (
-        f"{subtype}_diverse_state"
-        if subtype == "target_non_gap_background_gap" and target_state_mode == "allow-diverse"
-        else f"{subtype}_uniform_state"
-        if subtype == "target_non_gap_background_gap"
-        else subtype
-    )
-    return Event(
-        event_id=event_id,
-        family_id=family_id,
-        symbol=symbol,
-        source_alignment_file=source_alignment_file,
-        event_type="indel_like",
-        event_subtype=subtype_label,
-        target_state_mode=target_state_mode,
-        bed_mode=bed_mode,
-        aln_codon_start_1based=segment[0][0],
-        aln_codon_end_1based=segment[-1][0],
-        target_stats=target_agg,
-        background_stats=bg_agg,
-        outgroup_stats=out_agg,
-        coordinate_ref_state=segment[0][4],
-        target_state_set={s.aa for s in target_states},
-        background_state_set={s.aa for s in bg_states},
-        target_codon_state_set={s.codon for s in target_states},
-        background_codon_state_set={s.codon for s in bg_states},
-        is_nonsynonymous=False,
-        codon_change_class="alignment_relative_indel_like",
-        aa_change_label=f"{subtype}:{segment[0][0]}-{segment[-1][0]}",
-    )
-
-
-def extract_nt_changes(event: Event) -> List[NtChange]:
-    if event.event_type != "aa_substitution":
-        return []
-    changes: List[NtChange] = []
-    for offset in [1, 2, 3]:
-        target_nts = event.target_stats.nt_set(offset)
-        bg_nts = event.background_stats.nt_set(offset)
-        if target_nts and bg_nts and not (target_nts & bg_nts):
-            role = "component_of_multint_nonsynonymous_codon"
-            if event.codon_change_class == "nonsynonymous_single_nt":
-                role = "sole_nonsynonymous_change"
-            elif event.codon_change_class == "complex_or_polymorphic":
-                role = "component_of_diverse_target_state"
-            changes.append(
-                NtChange(
-                    event=event,
-                    codon_offset_1based=offset,
-                    target_nt_state_set=target_nts,
-                    background_nt_state_set=bg_nts,
-                    nt_change_role=role,
-                )
-            )
-    return changes
 
 
 def complement_base(base: str) -> str:
@@ -842,70 +742,6 @@ def matrix_rows_for_event(
     base = event_base_row(event, groups)
     nt_rows: List[dict] = []
     matrix_rows: List[dict] = []
-    if event.event_type == "aa_substitution":
-        changes = extract_nt_changes(event)
-        if not changes:
-            row = dict(base)
-            row["coordinate_status"] = "not_mapped_no_target_exclusive_nt_change"
-            matrix_rows.append(row)
-            return matrix_rows, nt_rows
-        for change in changes:
-            nt_row = {
-                "family_id": event.family_id,
-                "reference_symbol": event.symbol,
-                "event_id": event.event_id,
-                "event_type": event.event_type,
-                "event_subtype": event.event_subtype,
-                "target_state_mode": event.target_state_mode,
-                "aln_codon_index_1based": str(event.aln_codon_start_1based),
-                "codon_offset_1based": str(change.codon_offset_1based),
-                "target_nt_state_set": state_csv(change.target_nt_state_set),
-                "background_nt_state_set": state_csv(change.background_nt_state_set),
-                "codon_change_class": event.codon_change_class,
-                "nt_change_role": change.nt_change_role,
-                "is_nonsynonymous": "true",
-            }
-            nt_rows.append(nt_row)
-            matrix_row, status, cds_nt, cds_codon, cds_base, genome_base = coordinate_for_nt(
-                event.aln_codon_start_1based,
-                change.codon_offset_1based,
-                event,
-                resources,
-            )
-            row = dict(base)
-            row.update(
-                {
-                    "nt_change_role": change.nt_change_role,
-                    "codon_offset_1based": str(change.codon_offset_1based),
-                    "target_nt_state_set": state_csv(change.target_nt_state_set),
-                    "background_nt_state_set": state_csv(change.background_nt_state_set),
-                    "coordinate_status": status,
-                    "coordinate_ref_cds_nt_start_1based": cds_nt,
-                    "coordinate_ref_cds_nt_end_1based": cds_nt,
-                    "coordinate_ref_cds_codon_start_1based": cds_codon,
-                    "coordinate_ref_cds_codon_end_1based": cds_codon,
-                    "coordinate_ref_nt_cds_strand": cds_base,
-                    "coordinate_ref_nt_genome_plus": genome_base,
-                    "bed_event_class": "target_exclusive_substitutions",
-                }
-            )
-            if matrix_row:
-                row.update(
-                    {
-                        "coordinate_ref_has_mappable_base": "true",
-                        "coordinateable": "true",
-                        "ucsc_chrom": matrix_row.get("ucsc_chrom", ""),
-                        "bed_start_0based": matrix_row.get("bed_start_0based", ""),
-                        "bed_end_0based": matrix_row.get("bed_end_0based", ""),
-                        "strand": matrix_row.get("strand", ""),
-                        "event_block_count": "1",
-                        "event_block_index": "1",
-                        "genomic_block_id": f"{event.event_id}.block_1",
-                    }
-                )
-            matrix_rows.append(row)
-        return matrix_rows, nt_rows
-
     mapped_nt_rows: List[dict] = []
     failure_status = ""
     for aln_idx in range(event.aln_codon_start_1based, event.aln_codon_end_1based + 1):
@@ -923,7 +759,7 @@ def matrix_rows_for_event(
     if not mapped_nt_rows:
         row = dict(base)
         row["coordinate_status"] = failure_status or "not_mapped_no_genomic_coordinate"
-        row["bed_event_class"] = event.event_subtype
+        row["bed_event_class"] = "variant"
         matrix_rows.append(row)
         return matrix_rows, nt_rows
 
@@ -939,7 +775,7 @@ def matrix_rows_for_event(
                 "bed_start_0based": str(min(int(r["bed_start_0based"]) for r in block)),
                 "bed_end_0based": str(max(int(r["bed_end_0based"]) for r in block)),
                 "strand": block[0].get("strand", ""),
-                "bed_event_class": event.event_subtype.replace("_uniform_state", "").replace("_diverse_state", ""),
+                "bed_event_class": "variant",
                 "event_block_count": str(len(blocks)),
                 "event_block_index": str(i),
                 "genomic_block_id": f"{event.event_id}.block_{i}",
@@ -954,25 +790,20 @@ def matrix_rows_for_event(
 
 
 def bed_rows_from_matrix(matrix_rows: Sequence[dict], symbol: str, target_label: str, bed_mode: str) -> Dict[str, List[List[str]]]:
-    beds = {
-        "target_exclusive_substitutions": [],
-        "target_non_gap_background_gap": [],
-        "target_gap_background_non_gap": [],
-    }
+    beds = {"variant": []}
     if bed_mode == "none":
         return beds
     for row in matrix_rows:
         if row.get("coordinateable") != "true":
             continue
         bed_class = row.get("bed_event_class", "")
-        if bed_mode == "substitution-only" and bed_class != "target_exclusive_substitutions":
-            continue
         if bed_class not in beds:
             continue
         name = (
             f"{symbol}|target={target_label}|{bed_class}|{row.get('event_id')}|"
             f"block_{row.get('event_block_index')}_of_{row.get('event_block_count')}|"
-            f"codon_{row.get('aln_codon_start_1based')}_{row.get('aln_codon_end_1based')}"
+            f"codon_{row.get('aln_codon_start_1based')}_{row.get('aln_codon_end_1based')}|"
+            f"{row.get('event_subtype')}"
         )
         beds[bed_class].append(
             [
@@ -995,6 +826,34 @@ def write_bed(path: Path, rows: Sequence[Sequence[str]]) -> None:
                 fh.write("\t".join(row) + "\n")
 
 
+def bed_sort_key(row: Sequence[str]) -> Tuple[str, int, int, str]:
+    return (row[0], int(row[1]), int(row[2]), row[3] if len(row) > 3 else "")
+
+
+def write_merged_bed(output_root: Path, results: Sequence["GeneResult"]) -> Tuple[str, int]:
+    rows: List[List[str]] = []
+    for result in results:
+        for path_text in result.bed_paths.split(";"):
+            if not path_text:
+                continue
+            bed_path = output_root / path_text
+            if not bed_path.exists():
+                continue
+            with bed_path.open(newline="") as fh:
+                for line in fh:
+                    text = line.rstrip("\n")
+                    if not text:
+                        continue
+                    fields = text.split("\t")
+                    if len(fields) >= 3:
+                        rows.append(fields)
+    merged_path = output_root / "merged.bed"
+    write_bed(merged_path, sorted(rows, key=bed_sort_key))
+    with merged_path.open() as fh:
+        merged_rows = sum(1 for line in fh if line.strip())
+    return rel(merged_path, output_root), merged_rows
+
+
 @dataclass
 class GeneResult:
     status: str
@@ -1007,6 +866,9 @@ class GeneResult:
     variant_matrix_path: str = ""
     bed_paths: str = ""
     event_count: int = 0
+    variant_count: int = 0
+    identical_sequence_count: int = 0
+    divergent_sequence_count: int = 0
     substitution_count: int = 0
     indel_like_count: int = 0
     nt_change_count: int = 0
@@ -1038,13 +900,15 @@ def process_gene(path: Path, args: argparse.Namespace, output_root: Path) -> Gen
     source_alignment = rel(path, output_root)
     family_id = symbol
     event_no = 0
-    substitution_events: List[Event] = []
-    indel_segments: List[Tuple[str, List[Tuple[int, GroupStats, GroupStats, GroupStats, Optional[CodonState]]]]] = []
-    active_subtype: Optional[str] = None
-    active_segment: List[Tuple[int, GroupStats, GroupStats, GroupStats, Optional[CodonState]]] = []
+    events: List[Event] = []
     status_counter: Counter[str] = Counter()
 
-    min_target_non_gap = threshold_count(args.min_target_non_gap, len(groups.target_tokens), default_all=True)
+    min_target_informative = threshold_count(args.min_target_informative, len(groups.target_tokens), default_all=True)
+    min_background_informative = threshold_count(
+        args.min_background_informative,
+        len(groups.background_tokens),
+        default_all=False,
+    )
     for aln_codon_index in range(1, len(next(iter(records.values()))) // 3 + 1):
         token_states = {
             token: classify_codon(token, seq[(aln_codon_index - 1) * 3 : aln_codon_index * 3], table)
@@ -1056,7 +920,7 @@ def process_gene(path: Path, args: argparse.Namespace, output_root: Path) -> Gen
         outgroup_stats = group_stats_for(token_states, groups.outgroup_tokens)
         coord_state = token_states.get(groups.coordinate_reference_token)
 
-        candidate = call_substitution(
+        candidate = call_aa_variant(
             make_event_id(event_no + 1),
             family_id,
             symbol,
@@ -1068,51 +932,13 @@ def process_gene(path: Path, args: argparse.Namespace, output_root: Path) -> Gen
             coord_state,
             args.target_state_mode,
             args.bed_mode,
-            min_target_non_gap,
-            args.min_background_non_gap,
-            args.max_target_gap_fraction_for_substitution,
+            min_target_informative,
+            min_background_informative,
         )
         if candidate:
             event_no += 1
             candidate.event_id = make_event_id(event_no)
-            substitution_events.append(candidate)
-
-        indel_subtype = classify_indel_candidate(
-            target_stats,
-            background_stats,
-            args.target_state_mode,
-            args.min_target_non_gap_fraction,
-            args.min_target_gap_fraction,
-            args.min_background_gap_fraction_for_target_non_gap_event,
-            args.min_background_non_gap_fraction_for_target_gap_event,
-            args.min_background_non_gap,
-        )
-        site_tuple = (aln_codon_index, target_stats, background_stats, outgroup_stats, coord_state)
-        if indel_subtype and indel_subtype == active_subtype:
-            active_segment.append(site_tuple)
-        else:
-            if active_segment and active_subtype:
-                indel_segments.append((active_subtype, active_segment))
-            active_subtype = indel_subtype
-            active_segment = [site_tuple] if indel_subtype else []
-    if active_segment and active_subtype:
-        indel_segments.append((active_subtype, active_segment))
-
-    events = list(substitution_events)
-    for subtype, segment in indel_segments:
-        event_no += 1
-        events.append(
-            make_indel_event(
-                make_event_id(event_no),
-                family_id,
-                symbol,
-                source_alignment,
-                subtype,
-                segment,
-                args.target_state_mode,
-                args.bed_mode,
-            )
-        )
+            events.append(candidate)
 
     aa_rows = [event_base_row(event, groups) for event in events]
     codon_rows = list(aa_rows)
@@ -1179,8 +1005,11 @@ def process_gene(path: Path, args: argparse.Namespace, output_root: Path) -> Gen
         variant_matrix_path=rel(matrix_path, output_root),
         bed_paths=";".join(bed_paths),
         event_count=len(events),
-        substitution_count=sum(1 for e in events if e.event_type == "aa_substitution"),
-        indel_like_count=sum(1 for e in events if e.event_type == "indel_like"),
+        variant_count=sum(1 for e in events if e.event_type == "aa_variant"),
+        identical_sequence_count=sum(1 for e in events if e.event_subtype == "identical_sequence"),
+        divergent_sequence_count=sum(1 for e in events if e.event_subtype == "divergent_sequence"),
+        substitution_count=0,
+        indel_like_count=0,
         nt_change_count=len(nt_rows),
         coordinateable_rows=sum(1 for r in matrix_rows if r.get("coordinateable") == "true"),
         bed_rows=total_bed_rows,
@@ -1199,6 +1028,9 @@ def result_row(result: GeneResult) -> dict:
         "variant_matrix_path": result.variant_matrix_path,
         "bed_paths": result.bed_paths,
         "event_count": result.event_count,
+        "variant_count": result.variant_count,
+        "identical_sequence_count": result.identical_sequence_count,
+        "divergent_sequence_count": result.divergent_sequence_count,
         "substitution_count": result.substitution_count,
         "indel_like_count": result.indel_like_count,
         "nt_change_count": result.nt_change_count,
@@ -1218,8 +1050,8 @@ def write_plain_tsv(path: Path, columns: Sequence[str], rows: Sequence[dict]) ->
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Call target-specific comparative CDS events and map them to BED.")
-    parser.add_argument("--alignment-dir", default=str(Path.cwd() / "alignments" / "final"))
+    parser = argparse.ArgumentParser(description="Call target-specific amino acid variants and map coordinateable variants to BED.")
+    parser.add_argument("--alignment-dir", default=str(Path.cwd() / "alignments" / "mafft_pal2nal"))
     parser.add_argument("--codon-map-dir", default="")
     parser.add_argument("--matrix-dir", default=str(Path.cwd() / "human_cds_matrices"))
     parser.add_argument("--output-dir", default=str(Path.cwd() / "variants"))
@@ -1231,10 +1063,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--outgroup-tokens-file")
     parser.add_argument("--exclude-token", action="append", default=[])
     parser.add_argument("--exclude-tokens-file")
-    parser.add_argument("--target-state-mode", choices=["uniform", "allow-diverse"], default="uniform")
-    parser.add_argument("--min-target-non-gap", default="all")
+    parser.add_argument("--target-state-mode", choices=["uniform", "allow-diverse"], default="uniform", help="Deprecated compatibility option; v0.1.5 reports identical/divergent target states automatically")
+    parser.add_argument("--min-target-non-gap", default="all", help="Deprecated alias for --min-target-informative")
+    parser.add_argument("--min-target-informative", default=None, help="Minimum informative target states; valid codons and full codon gaps are informative")
     parser.add_argument("--max-target-gap-fraction-for-substitution", type=float, default=0.0)
-    parser.add_argument("--min-background-non-gap", type=int, default=5)
+    parser.add_argument("--min-background-non-gap", type=int, default=5, help="Deprecated alias for --min-background-informative")
+    parser.add_argument("--min-background-informative", default=None, help="Minimum informative background states; valid codons and full codon gaps are informative")
     parser.add_argument("--min-background-gap-fraction-for-target-non-gap-event", type=float, default=0.8)
     parser.add_argument("--min-background-non-gap-fraction-for-target-gap-event", type=float, default=0.8)
     parser.add_argument("--min-target-non-gap-fraction", type=float, default=1.0)
@@ -1261,7 +1095,17 @@ def normalize_args(args: argparse.Namespace) -> argparse.Namespace:
     args.outgroup_tokens = unique_preserve_order(split_values(args.outgroup_token) + read_token_file(args.outgroup_tokens_file))
     args.exclude_tokens = unique_preserve_order(split_values(args.exclude_token) + read_token_file(args.exclude_tokens_file))
     args.symbols = unique_preserve_order(split_values(args.symbols) + read_token_file(args.symbols_file))
+    if args.min_target_informative is None:
+        args.min_target_informative = args.min_target_non_gap
+    if args.min_background_informative is None:
+        args.min_background_informative = str(args.min_background_non_gap)
     if args.bed_mode == "auto":
+        args.bed_mode = "all-coordinateable"
+    elif args.bed_mode == "substitution-only":
+        print(
+            "Warning: --bed-mode substitution-only is deprecated in v0.1.5; writing coordinateable variant rows.",
+            file=sys.stderr,
+        )
         args.bed_mode = "all-coordinateable"
     if not args.codon_map_dir:
         aln_dir = Path(args.alignment_dir)
@@ -1294,6 +1138,8 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
         "outgroup_tokens": args.outgroup_tokens,
         "exclude_tokens": args.exclude_tokens,
         "target_state_mode": args.target_state_mode,
+        "min_target_informative": args.min_target_informative,
+        "min_background_informative": args.min_background_informative,
         "bed_mode": args.bed_mode,
         "selected_alignment_files": [str(p) for p in alignment_files],
     }
@@ -1319,23 +1165,32 @@ def main(argv: Optional[Sequence[str]] = None) -> None:
     columns = list(result_row(GeneResult("pass", "", "", "")).keys())
     write_plain_tsv(output_root / "manifest.tsv", columns, [result_row(r) for r in results])
     write_plain_tsv(output_root / "failed.tsv", columns, [result_row(r) for r in failed])
+    merged_bed_path, merged_bed_rows = write_merged_bed(output_root, results)
     summary = {
         "status": "pass" if not failed else "partial",
-        "version_stage": "v0.1.4",
+        "version_stage": "v0.1.5",
         "families_processed": len(results),
         "families_failed": len(failed),
+        "variant_calling_mode": "aa_mutual_exclusive",
         "target_state_mode": args.target_state_mode,
+        "min_target_informative": args.min_target_informative,
+        "min_background_informative": args.min_background_informative,
         "bed_mode": args.bed_mode,
         "coordinate_reference_token": args.coordinate_reference_token,
         "target_tokens": args.target_tokens,
         "outgroup_tokens": args.outgroup_tokens,
         "exclude_tokens": args.exclude_tokens,
         "event_count": sum(r.event_count for r in results),
-        "substitution_count": sum(r.substitution_count for r in results),
-        "indel_like_count": sum(r.indel_like_count for r in results),
+        "variant_count": sum(r.variant_count for r in results),
+        "identical_sequence_count": sum(r.identical_sequence_count for r in results),
+        "divergent_sequence_count": sum(r.divergent_sequence_count for r in results),
+        "substitution_count": 0,
+        "indel_like_count": 0,
         "nt_change_count": sum(r.nt_change_count for r in results),
         "coordinateable_rows": sum(r.coordinateable_rows for r in results),
         "bed_rows": sum(r.bed_rows for r in results),
+        "merged_bed_path": merged_bed_path,
+        "merged_bed_rows": merged_bed_rows,
         "runtime_seconds": round(time.time() - start, 3),
     }
     (output_root / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")

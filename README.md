@@ -1,13 +1,14 @@
 # refseq2cds
 
-RefSeq 1:1 orthologs to CDS FASTA files.
+Assembly-exact RefSeq ortholog CDS FASTA, alignment, and variant workflow.
 
-Version: `0.1.4`
+Version: `0.1.5`
 
 Author: Chul Lee (chul.bioinfo@gmail.com)
 
-`refseq2cds` is an assembly-exact NCBI RefSeq singleton ortholog CDS FASTA
-builder.
+`refseq2cds` is an assembly-exact NCBI RefSeq ortholog CDS FASTA builder with
+optional coordinate matrices, codon alignments, and target-specific variant
+outputs.
 
 This repository builds assembly-exact ortholog CDS FASTA files from NCBI RefSeq
 assembly annotations and NCBI Gene FTP orthology edges. It supports two
@@ -19,7 +20,7 @@ matrices so codon/site-level results can later be converted to UCSC Genome
 Browser BED coordinates. It can also create lightweight tree-free codon
 alignments with a MAFFT protein MSA followed by PAL2NAL back-translation.
 After codon alignment, `refseq2cds variants` can detect target-group-specific
-coding events and write coordinateable nonsynonymous/indel-like events as BED.
+amino acid variants and write coordinateable `variant` events as BED.
 
 `refseq2cds` is not a de novo orthology inference program and it is not just a
 CDS downloader. It treats NCBI Gene orthology records as input evidence, applies
@@ -256,6 +257,19 @@ alignments/mafft_pal2nal/failed.tsv
 alignments/mafft_pal2nal/summary.json
 ```
 
+Optional target-specific variant outputs:
+
+```text
+variants/events/{REFERENCE_SYMBOL}.aa_events.tsv.gz
+variants/events/{REFERENCE_SYMBOL}.codon_events.tsv.gz
+variants/events/{REFERENCE_SYMBOL}.nt_changes.tsv.gz
+variants/matrices/{REFERENCE_SYMBOL}.variant_matrix.tsv.gz
+variants/bed/{REFERENCE_SYMBOL}.{TARGET_SET}.variant.bed
+variants/merged.bed
+variants/manifest.tsv
+variants/summary.json
+```
+
 In strict singleton mode, each FASTA contains exactly one CDS sequence per
 locked species. In reference-gene present-species mode, each FASTA contains the
 reference sequence plus the subset of manifest species that pass the
@@ -298,8 +312,12 @@ as:
 9. Write one `{REFERENCE_SYMBOL}.fasta` per accepted singleton family.
 10. Optionally write one human CDS genomic-position matrix per accepted family
     when `--with-matrices` is used and human is present.
-11. Optionally align each CDS FASTA with `refseq2cds align` using MAFFT for
+11. Verify the run outputs with `refseq2cds verify`.
+12. Optionally align each CDS FASTA with `refseq2cds align` using MAFFT for
     protein MSA and PAL2NAL for codon back-translation.
+13. Optionally call target-specific variants with `refseq2cds variants`, using
+    the alignment codon maps plus coordinate matrices to write BED rows.
+14. Verify alignment and variant output directories with `refseq2cds verify`.
 
 ## Install
 
@@ -493,15 +511,31 @@ fastas/   final singleton CDS FASTA files
 human_cds_matrices/  human CDS-to-genome coordinate matrices
 ```
 
+Recommended end-to-end command flow:
+
+| Step | Command | Main input | Main output | Used by |
+|---|---|---|---|---|
+| 1 | `refseq2cds manifest-from-gcf` or `init-manifest` | GCF list or packaged defaults | `config/species_manifest.tsv` | `run`, `verify`, `align` |
+| 2 | `refseq2cds run --steps all --with-matrices` | manifest, NCBI Gene bulk files, locked GCF packages | `fastas/`, `human_cds_matrices/`, `reports/` | `verify`, `align`, `variants` |
+| 3 | `refseq2cds verify --full --matrix-rows sample` | run output root | JSON pass/fail check | checkpoint before alignment |
+| 4 | `refseq2cds align --mode mafft-pal2nal --map-token human` | `fastas/` | `alignments/mafft_pal2nal/` and codon maps | `variants` |
+| 5 | `refseq2cds variants` | codon alignments, codon maps, coordinate matrices | `variants/` variant tables and BED files | downstream analysis/UCSC |
+| 6 | `refseq2cds verify --alignment-dir ... --variant-dir ...` | completed output directories | JSON pass/fail check | final run audit |
+
+The directory names are intentionally connected: `run` writes `fastas/` and
+`human_cds_matrices/`; `align` reads `fastas/` and writes
+`alignments/mafft_pal2nal/`; `variants` reads `alignments/mafft_pal2nal/`,
+`alignments/mafft_pal2nal/maps/`, and `human_cds_matrices/`.
+
 After FASTA generation, create lightweight tree-free codon alignments:
 
 ```bash
-refseq2cds align --mode mafft-pal2nal --jobs 4 --threads-per-mafft 2
+refseq2cds align --mode mafft-pal2nal --jobs 4 --threads-per-mafft 2 --map-token human
 ```
 
-After codon alignment, call target-specific coding events. This example finds
-human-specific events while using human only as the coordinate reference for
-BED conversion:
+After codon alignment, call target-specific amino acid variants. This example
+finds human-specific variants while using human only as the coordinate
+reference for BED conversion:
 
 ```bash
 refseq2cds variants \
@@ -510,20 +544,19 @@ refseq2cds variants \
   --matrix-dir human_cds_matrices \
   --coordinate-reference-token human \
   --target-token human \
-  --min-background-non-gap 5 \
+  --min-background-informative 5 \
   --force
 ```
 
 The coordinate reference token is not a privileged biological comparator during
-event calling. The command first compares target states against background
-states after removing outgroup/excluded tokens, then maps only events where the
-coordinate reference has a real mappable CDS base. See
+event calling. The command calls codon sites only when target and background
+amino acid state sets are mutually exclusive, then maps only events where the
+coordinate reference has a real mappable CDS base. v0.1.5 reports coordinateable
+substitution-like and gap-involving amino acid differences together as
+`bed_event_class=variant`; it does not emit separate insertion/deletion BED
+classes. Per-gene BED files are also concatenated and coordinate-sorted into
+`variants/merged.bed` for downstream genome-browser and interval workflows. See
 `docs/variant_detection.md` for the matrix and BED rules.
-
-For indel-like events, this means `target_non_gap_background_gap` is BED-mappable
-when the coordinate reference carries the target-side base, while
-`target_gap_background_non_gap` is BED-mappable when the coordinate reference is
-in the background and carries the base.
 
 ### Reference-Gene Query Run
 
@@ -576,7 +609,10 @@ refseq2cds align \
 
 ## Verify Outputs
 
-Fast verification:
+`refseq2cds verify` is a checkpoint command. It does not regenerate data; it
+checks that the files produced by earlier steps are internally consistent.
+
+Fast verification of a run generated with `--with-matrices`:
 
 ```bash
 refseq2cds verify
@@ -586,6 +622,17 @@ If outputs are not in the current directory:
 
 ```bash
 refseq2cds verify --output-root /path/to/run --manifest /path/to/species_manifest.tsv
+```
+
+Use `--manifest` with the exact manifest used for the run. FASTA headers are
+checked against the manifest species tokens. In strict singleton mode, each
+FASTA must contain every manifest token. In reference-gene present-species
+mode, the FASTA may contain a validated subset of manifest tokens.
+
+If you ran without `--with-matrices`, skip matrix checks:
+
+```bash
+refseq2cds verify --matrix-rows none
 ```
 
 Full FASTA verification plus sampled matrix row counts:
@@ -601,14 +648,27 @@ files:
 refseq2cds verify --full --matrix-rows full
 ```
 
-The current generated dataset was verified with:
+After alignment and variant calling, pass those directories explicitly:
 
-```text
-FASTA files: 13,853
-Human CDS genomic matrices: 13,853
-Matrix failures: 0
-Total matrix rows: 25,337,835
+```bash
+refseq2cds verify \
+  --full \
+  --matrix-rows sample \
+  --alignment-dir alignments/mafft_pal2nal \
+  --variant-dir variants/human_specific
 ```
+
+What the verify levels mean:
+
+| Option | What is checked | Cost |
+|---|---|---|
+| default | Python source syntax, required reports, first 200 FASTA files, sampled matrix row counts | fast |
+| `--full` | every FASTA file instead of a 200-file sample | moderate for large runs |
+| `--matrix-rows none` | skip matrix manifests and matrix row counts | use when no matrices were built |
+| `--matrix-rows sample` | count rows for selected matrix files and compare with matrix manifest | fast checkpoint |
+| `--matrix-rows full` | count rows in every gzipped matrix file | slow but strongest matrix audit |
+| `--alignment-dir PATH` | check alignment `summary.json`, `manifest.tsv`, `failed.tsv`, and codon alignment counts; relative paths are resolved under `--output-root` | fast |
+| `--variant-dir PATH` | check variant `summary.json`, `manifest.tsv`, failures, and BED row counts; relative paths are resolved under `--output-root` | fast to moderate |
 
 ## Commands
 
@@ -751,6 +811,28 @@ alignments/mafft_pal2nal/failed.tsv
 alignments/mafft_pal2nal/summary.json
 ```
 
+### Call Target-Specific Variants
+
+`variants` consumes codon alignments, token-specific codon maps, and CDS-to-
+genome matrices. It writes per-gene BED tracks plus `merged.bed` for all
+coordinateable variants. The default `--alignment-dir` matches the default
+`align` output directory:
+
+```bash
+refseq2cds variants \
+  --alignment-dir alignments/mafft_pal2nal \
+  --matrix-dir human_cds_matrices \
+  --coordinate-reference-token human \
+  --target-token human \
+  --min-background-informative 5 \
+  --output-dir variants/human_specific \
+  --force
+```
+
+If `--codon-map-dir` is omitted, the command first looks for
+`<alignment-dir>/maps`, which is where `refseq2cds align --map-token human`
+writes human codon maps.
+
 ### Print Summary
 
 ```bash
@@ -778,7 +860,10 @@ CITATION.cff                 citation metadata
 
 The conda recipe is pinned to a GitHub release tarball and SHA256. During
 development, update the recipe only after the GitHub tag exists so the final
-release archive checksum can be recorded. To test the current recipe locally:
+release archive checksum can be recorded. For example, after tagging v0.1.5,
+download the GitHub release tarball, compute its SHA256, update
+`conda-recipe/meta.yaml`, and then run the local build checks. To test the
+current recipe locally:
 
 ```bash
 mamba install -c conda-forge -c bioconda conda-build

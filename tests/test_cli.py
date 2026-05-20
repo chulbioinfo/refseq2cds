@@ -52,6 +52,11 @@ def test_help_lists_core_commands() -> None:
     assert "test" in proc.stdout
 
 
+def test_version_reports_current_version() -> None:
+    proc = run_cli("--version")
+    assert proc.stdout.strip() == "refseq2cds 0.1.5"
+
+
 def test_gcf_accession_normalization_accepts_release_suffixes() -> None:
     assert refseq2cds_cli.normalize_gcf_accession("GCF_037993035.2-RS_2025_03") == "GCF_037993035.2"
     assert refseq2cds_cli.normalize_gcf_accession("GCF_964374335.1/") == "GCF_964374335.1"
@@ -80,6 +85,36 @@ def test_mini_example_generates_fastas_and_matrices(tmp_path: Path) -> None:
     summary = json.loads((out / "reports" / "summary.json").read_text())
     assert summary["cds_qc_fail_reasons"] == {"internal_stop": 1}
     assert summary["rejected_reasons"]["component_size_not_expected_species_count"] == 2
+
+
+def test_verify_can_skip_matrices_for_fasta_only_run(tmp_path: Path) -> None:
+    out = tmp_path / "mini_no_matrices"
+    run_cli(
+        "run",
+        "--manifest",
+        str(ROOT / "examples/mini/manifest.tsv"),
+        "--input-root",
+        str(ROOT / "examples/mini/inputs"),
+        "--output-root",
+        str(out),
+        "--offline",
+        "--steps",
+        "all",
+        "--force",
+    )
+
+    proc = run_cli(
+        "verify",
+        "--output-root",
+        str(out),
+        "--manifest",
+        str(ROOT / "examples/mini/manifest.tsv"),
+        "--matrix-rows",
+        "none",
+    )
+    result = json.loads(proc.stdout[proc.stdout.index("{") :])
+    assert result["status"] == "pass"
+    assert result["matrices"]["status"] == "skipped"
 
 
 def test_mini_negative_strand_matrix_coordinates(tmp_path: Path) -> None:

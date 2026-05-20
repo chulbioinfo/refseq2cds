@@ -51,7 +51,7 @@ about:
     locked GCF annotation packages and NCBI Gene orthology edges. It supports
     strict N-way singleton parsing, reference-gene present-species queries,
     human CDS-to-genome coordinate matrices, MAFFT+PAL2NAL codon alignments,
-    and target-specific coding event BED outputs.
+    and target-specific variant BED outputs.
   dev_url: https://github.com/chulbioinfo/refseq2cds
 
 extra:

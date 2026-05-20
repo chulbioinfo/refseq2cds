@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.1.5 - 2026-05-20
+
+### Added
+
+- `refseq2cds --version` for quick installed-version checks.
+- Optional `refseq2cds verify --alignment-dir ...` and `--variant-dir ...`
+  checks so end-to-end runs can validate FASTA/matrix outputs together with
+  MAFFT+PAL2NAL alignment and variant-call directories. Relative paths are
+  resolved under `--output-root`.
+- `refseq2cds verify --matrix-rows none` now supports FASTA/report-only runs
+  that were generated without `--with-matrices`.
+
+### Changed
+
+- Project version bumped to `0.1.5`.
+- `refseq2cds variants` now defaults to `alignments/mafft_pal2nal`, matching
+  the default output directory from `refseq2cds align`.
+- README and option documentation were reorganized around the practical
+  `manifest -> run -> verify -> align -> variants -> verify` analysis flow.
+- Reworked `refseq2cds variants` to call codon-site variants only when target
+  and background amino acid state sets are mutually exclusive.
+- Full codon gaps now participate as amino acid state `-`; gap fraction
+  thresholds no longer create separate insertion/deletion calls.
+- Uniform target states are reported as `identical_sequence`; diverse target
+  states are reported as `divergent_sequence`.
+- Coordinateable BED output is unified under `bed_event_class=variant` and
+  `{SYMBOL}.{TARGET_SET}.variant.bed`.
+- Added `variants/merged.bed`, a coordinate-sorted concatenation of all
+  per-gene variant BED rows for downstream interval analyses.
+
 ## v0.1.4 - 2026-05-11
 
 ### Added

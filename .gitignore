@@ -31,6 +31,7 @@ alignments/
 containers/
 v*_variant_smoke
 v*_variant_smoke/
+hg38_clade_specific_variants/
 
 # Local NCBI CLI binaries
 bin/datasets

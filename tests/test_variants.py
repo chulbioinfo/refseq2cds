@@ -167,14 +167,20 @@ def test_variants_default_uniform_calls_human_specific_substitution(tmp_path: Pa
     )
     summary = json.loads(proc.stdout[proc.stdout.index("{") :])
     assert summary["target_state_mode"] == "uniform"
-    assert summary["substitution_count"] == 1
+    assert summary["variant_count"] == 1
+    assert summary["identical_sequence_count"] == 1
     assert summary["bed_rows"] == 1
+    assert summary["merged_bed_path"] == "merged.bed"
+    assert summary["merged_bed_rows"] == 1
     rows = read_gzip_tsv(out / "matrices" / "GENE.variant_matrix.tsv.gz")
     assert rows[0]["coordinateable"] == "true"
-    assert rows[0]["bed_event_class"] == "target_exclusive_substitutions"
+    assert rows[0]["event_type"] == "aa_variant"
+    assert rows[0]["event_subtype"] == "identical_sequence"
+    assert rows[0]["bed_event_class"] == "variant"
+    assert (out / "merged.bed").read_text().startswith("chrTest\t1000\t1003\tGENE|target=human|variant")
 
 
-def test_variants_uniform_rejects_diverse_target_but_allow_diverse_calls(tmp_path: Path) -> None:
+def test_variants_default_calls_divergent_target_variant(tmp_path: Path) -> None:
     records = {
         "human": "AAA",
         "chimpanzee": "AGA",
@@ -203,10 +209,23 @@ def test_variants_uniform_rejects_diverse_target_but_allow_diverse_calls(tmp_pat
         "--force",
     )
     summary = json.loads(proc.stdout[proc.stdout.index("{") :])
-    assert summary["substitution_count"] == 0
+    assert summary["variant_count"] == 1
+    assert summary["divergent_sequence_count"] == 1
+    rows = read_gzip_tsv(out / "matrices" / "GENE.variant_matrix.tsv.gz")
+    assert rows[0]["event_subtype"] == "divergent_sequence"
 
-    out2 = tmp_path / "variants_diverse"
-    proc2 = run_cli(
+
+def test_variants_rejects_non_exclusive_gap_rich_background(tmp_path: Path) -> None:
+    aln_dir, map_dir, matrix_dir, out = prepare_variant_fixture(
+        tmp_path,
+        {
+            "human": "AAA",
+            "chimpanzee": "AAA",
+            "gorilla": "---",
+            "bonobo": "---",
+        },
+    )
+    proc = run_cli(
         "variants",
         "--alignment-dir",
         str(aln_dir),
@@ -215,21 +234,20 @@ def test_variants_uniform_rejects_diverse_target_but_allow_diverse_calls(tmp_pat
         "--matrix-dir",
         str(matrix_dir),
         "--output-dir",
-        str(out2),
+        str(out),
         "--coordinate-reference-token",
         "human",
         "--target-token",
         "human",
-        "--target-token",
-        "chimpanzee",
-        "--target-state-mode",
-        "allow-diverse",
-        "--min-background-non-gap",
-        "2",
+        "--min-background-informative",
+        "1",
         "--force",
     )
-    summary2 = json.loads(proc2.stdout[proc2.stdout.index("{") :])
-    assert summary2["substitution_count"] == 1
+    summary = json.loads(proc.stdout[proc.stdout.index("{") :])
+    assert summary["variant_count"] == 0
+    assert summary["bed_rows"] == 0
+    assert summary["merged_bed_rows"] == 0
+    assert (out / "merged.bed").read_text() == ""
 
 
 def test_variants_coordinate_reference_gap_keeps_matrix_only_event(tmp_path: Path) -> None:
@@ -262,12 +280,13 @@ def test_variants_coordinate_reference_gap_keeps_matrix_only_event(tmp_path: Pat
     )
     summary = json.loads(proc.stdout[proc.stdout.index("{") :])
     assert summary["event_count"] >= 1
+    assert summary["variant_count"] == 1
     assert summary["bed_rows"] == 0
     rows = read_gzip_tsv(out / "matrices" / "GENE.variant_matrix.tsv.gz")
     assert any(row["coordinate_status"] == "not_mapped_coordinate_reference_gap" for row in rows)
 
 
-def test_variants_target_gap_background_non_gap_maps_when_reference_has_base(tmp_path: Path) -> None:
+def test_variants_target_gap_maps_as_variant_when_reference_has_base(tmp_path: Path) -> None:
     aln_dir, map_dir, matrix_dir, out = prepare_variant_fixture(
         tmp_path,
         {
@@ -296,7 +315,9 @@ def test_variants_target_gap_background_non_gap_maps_when_reference_has_base(tmp
         "--force",
     )
     summary = json.loads(proc.stdout[proc.stdout.index("{") :])
-    assert summary["indel_like_count"] == 1
+    assert summary["variant_count"] == 1
     assert summary["bed_rows"] == 1
-    bed = out / "bed" / "GENE.chimpanzee.target_gap_background_non_gap.bed"
-    assert bed.read_text().startswith("chrTest\t1000\t1003\tGENE|target=chimpanzee|target_gap_background_non_gap")
+    assert summary["merged_bed_rows"] == 1
+    bed = out / "bed" / "GENE.chimpanzee.variant.bed"
+    assert bed.read_text().startswith("chrTest\t1000\t1003\tGENE|target=chimpanzee|variant")
+    assert (out / "merged.bed").read_text() == bed.read_text()

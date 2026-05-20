@@ -62,13 +62,39 @@ human coordinate matrix generation without downloading data from NCBI.
 
 ## `refseq2cds verify`
 
-Check generated outputs.
+Check generated outputs without rerunning the pipeline. Use it as a checkpoint
+after FASTA/matrix generation and again after optional alignment/variant
+calling.
 
 ```bash
 refseq2cds verify --output-root /path/to/run --manifest /path/to/species_manifest.tsv
 ```
 
-If `--output-root` is omitted, the current directory is used.
+If `--output-root` is omitted, the current directory is used. If the run was
+created without `--with-matrices`, use `--matrix-rows none`.
+
+Important options:
+
+| Option | Meaning |
+|---|---|
+| `--manifest PATH` | Species manifest used to validate FASTA headers. |
+| `--output-root PATH` | Run root containing `fastas/`, `reports/`, and optionally `human_cds_matrices/`. |
+| `--full` | Check every FASTA rather than the default 200-file sample. |
+| `--matrix-rows none` | Skip matrix checks. Use for FASTA-only runs. |
+| `--matrix-rows sample` | Default. Count selected gzipped matrix files and compare with the matrix manifest. |
+| `--matrix-rows full` | Count every matrix file. Slower but strongest for final audits. |
+| `--alignment-dir PATH` | Also verify an alignment output directory such as `alignments/mafft_pal2nal`. Relative paths are resolved under `--output-root`. |
+| `--variant-dir PATH` | Also verify a variant output directory such as `variants/human_specific`. Relative paths are resolved under `--output-root`. |
+
+End-to-end verification example:
+
+```bash
+refseq2cds verify \
+  --full \
+  --matrix-rows sample \
+  --alignment-dir alignments/mafft_pal2nal \
+  --variant-dir variants/human_specific
+```
 
 ## `refseq2cds manifest-from-gcf`
 
@@ -103,10 +129,17 @@ refseq2cds align --mode mafft-pal2nal --jobs 4 --threads-per-mafft 2
 This is a baseline alignment mode. It does not replace tree-guided codon
 alignment tools such as PAGAN2 or PRANK.
 
+Use `--map-token human` when the alignment will feed `refseq2cds variants` and
+human genomic BED conversion:
+
+```bash
+refseq2cds align --mode mafft-pal2nal --map-token human
+```
+
 ## `refseq2cds variants`
 
-Call target-group-specific comparative coding events from codon-aware
-alignments and map coordinateable events to BED.
+Call target-group-specific amino acid variants from codon-aware alignments and
+map coordinateable variants to BED.
 
 ```bash
 refseq2cds variants \
@@ -115,7 +148,7 @@ refseq2cds variants \
   --matrix-dir human_cds_matrices \
   --coordinate-reference-token human \
   --target-token human \
-  --min-background-non-gap 5 \
+  --min-background-informative 5 \
   --force
 ```
 
@@ -123,18 +156,26 @@ Important options:
 
 | Option | Meaning |
 |---|---|
+| `--alignment-dir PATH` | Codon alignment directory. Defaults to `alignments/mafft_pal2nal`, matching `refseq2cds align`. |
+| `--codon-map-dir PATH` | Codon map directory. Defaults to `<alignment-dir>/maps` when present. |
+| `--matrix-dir PATH` | CDS-to-genome matrix directory from `refseq2cds run --with-matrices` or `build-matrices`. |
+| `--output-dir PATH` | Directory for variant tables and BED files. |
 | `--coordinate-reference-token TOKEN` | Species token used only for CDS/genome coordinate mapping. It is not a privileged event-calling comparator. Defaults to `human`. |
 | `--target-token TOKEN` | Target species or group member. May be supplied more than once. |
 | `--target-tokens-file PATH` | File with target tokens. |
 | `--outgroup-token TOKEN` | Biological outgroup token excluded from target-vs-background event calling. May be supplied more than once. |
 | `--exclude-token TOKEN` | Token excluded from event calling for quality or analysis reasons. |
-| `--target-state-mode uniform` | Default. Target tokens must share the same valid amino acid state for substitution calls. |
-| `--target-state-mode allow-diverse` | Allows multiple target states if the target state set and background state set are disjoint. |
-| `--bed-mode auto` | Write all coordinateable event classes to BED. Alias of `all-coordinateable`. |
-| `--bed-mode substitution-only` | Write only nonsynonymous substitution-derived BED rows. |
+| `--min-target-informative all` | Minimum informative target states. Informative means valid amino acid or full codon gap. |
+| `--min-background-informative N` | Minimum informative background states. Replaces the old gap-fraction indel thresholds. |
+| `--target-state-mode uniform` | Deprecated compatibility option. v0.1.5 reports uniform target states as `identical_sequence` and diverse target states as `divergent_sequence`. |
+| `--target-state-mode allow-diverse` | Deprecated compatibility option retained for old command lines. |
+| `--bed-mode auto` | Write all coordinateable `variant` rows to per-gene BED files and `merged.bed`. Alias of `all-coordinateable`. |
+| `--bed-mode substitution-only` | Deprecated compatibility alias for coordinateable v0.1.5 variant rows. |
 | `--bed-mode none` | Write matrix/event tables only. |
 
-The `variants` command compares target states against background states after
-removing outgroup and excluded tokens. The coordinate reference species is used
-only after an event has already been called, when alignment positions are mapped
-through the coordinate-reference codon map and CDS-to-genome matrix.
+The `variants` command calls a site only when target and background amino acid
+state sets are mutually exclusive. Full codon gaps (`---`) participate as amino
+acid state `-`; gap fraction thresholds no longer create separate insertion or
+deletion calls. The coordinate reference species is used only after an event has
+already been called, when alignment positions are mapped through the
+coordinate-reference codon map and CDS-to-genome matrix.

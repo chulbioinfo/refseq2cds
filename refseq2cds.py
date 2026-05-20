@@ -61,6 +61,7 @@ RUN_DRIVER = ROOT / "workflow" / "scripts" / "run_cds_pipeline.py"
 MATRIX_DRIVER = ROOT / "workflow" / "scripts" / "build_human_cds_position_matrices.py"
 ALIGN_DRIVER = ROOT / "workflow" / "scripts" / "align_mafft_pal2nal.py"
 VARIANT_DRIVER = ROOT / "workflow" / "scripts" / "call_target_specific_variants.py"
+VERSION = "0.1.5"
 
 KNOWN_TAXID_LABELS = {
     9606: ("human", "human"),
@@ -498,10 +499,14 @@ def cmd_variants(args: argparse.Namespace) -> None:
         args.target_state_mode,
         "--min-target-non-gap",
         args.min_target_non_gap,
+        "--min-target-informative",
+        args.min_target_informative if args.min_target_informative is not None else args.min_target_non_gap,
         "--max-target-gap-fraction-for-substitution",
         str(args.max_target_gap_fraction_for_substitution),
         "--min-background-non-gap",
         str(args.min_background_non_gap),
+        "--min-background-informative",
+        args.min_background_informative if args.min_background_informative is not None else str(args.min_background_non_gap),
         "--min-background-gap-fraction-for-target-non-gap-event",
         str(args.min_background_gap_fraction_for_target_non_gap_event),
         "--min-background-non-gap-fraction-for-target-gap-event",
@@ -681,6 +686,20 @@ def verify_fastas(full: bool, output_root: Path, species_manifest: Path) -> dict
 
 
 def verify_matrices(mode: str, output_root: Path) -> dict:
+    """Verify human CDS-to-genome matrices.
+
+    Matrix generation is optional. Passing ``--matrix-rows none`` means the
+    caller wants a FASTA/report-only verification, so matrix files are not
+    required in that mode.
+    """
+    if mode == "none":
+        return {
+            "status": "skipped",
+            "manifest_rows": 0,
+            "matrix_files": 0,
+            "failed_rows": 0,
+            "row_count_checked": 0,
+        }
     manifest_path = output_root / "human_cds_matrices" / "manifest.tsv"
     require_file(manifest_path, "human CDS matrix manifest")
     rows = read_tsv(manifest_path)
@@ -719,6 +738,7 @@ def verify_matrices(mode: str, output_root: Path) -> dict:
     else:
         raise ValueError(f"Unknown matrix check mode: {mode}")
     return {
+        "status": "pass",
         "manifest_rows": len(rows),
         "matrix_files": len(matrix_files),
         "failed_rows": failed_rows,
@@ -726,15 +746,126 @@ def verify_matrices(mode: str, output_root: Path) -> dict:
     }
 
 
-def verify_required_reports(output_root: Path) -> dict:
+def verify_required_reports(output_root: Path, require_matrices: bool = True) -> dict:
     summary = output_root / "reports" / "summary.json"
     matrix_summary = output_root / "reports" / "human_cds_position_matrices.summary.json"
     require_file(summary, "pipeline summary")
-    require_file(matrix_summary, "matrix summary")
+    result = {"summary": json.loads(summary.read_text())}
+    if require_matrices:
+        require_file(matrix_summary, "matrix summary")
+        result["matrix_summary"] = json.loads(matrix_summary.read_text())
+    else:
+        result["matrix_summary"] = None
+    return result
+
+
+def count_data_rows(path: Path) -> int:
+    require_file(path, "TSV file")
+    with path.open() as fh:
+        return max(0, sum(1 for _ in fh) - 1)
+
+
+def count_bed_rows(path: Path) -> int:
+    require_file(path, "BED file")
+    with path.open() as fh:
+        return sum(1 for line in fh if line.strip())
+
+
+def manifest_bed_paths(variant_dir: Path) -> List[Path]:
+    manifest = variant_dir / "manifest.tsv"
+    paths: List[Path] = []
+    with manifest.open(newline="") as fh:
+        for row in csv.DictReader(fh, delimiter="\t"):
+            for path_text in row.get("bed_paths", "").split(";"):
+                if path_text:
+                    paths.append((variant_dir / path_text).resolve())
+    return paths
+
+
+def verify_alignments(alignment_dir: Optional[Path]) -> dict:
+    """Verify optional MAFFT+PAL2NAL outputs when requested.
+
+    The align stage consumes ``fastas/`` and writes a self-contained directory
+    with ``codon/``, ``maps/``, ``manifest.tsv``, ``failed.tsv``, and
+    ``summary.json``. This check deliberately stays lightweight: it verifies
+    counts and failure status without rereading every alignment sequence.
+    """
+    if alignment_dir is None:
+        return {"status": "skipped"}
+    require_file(alignment_dir / "summary.json", "alignment summary")
+    require_file(alignment_dir / "manifest.tsv", "alignment manifest")
+    require_file(alignment_dir / "failed.tsv", "alignment failure log")
+    summary = json.loads((alignment_dir / "summary.json").read_text())
+    manifest_rows = count_data_rows(alignment_dir / "manifest.tsv")
+    failed_rows = count_data_rows(alignment_dir / "failed.tsv")
+    codon_dir = alignment_dir / "codon"
+    codon_files = sorted(p for p in codon_dir.glob("*.codon.fasta") if not p.name.startswith("._"))
+    if failed_rows != 0 or int(summary.get("failed", 0)) != 0:
+        raise AssertionError(f"Alignment failures are present: failed.tsv={failed_rows}, summary={summary.get('failed')}")
+    if manifest_rows != len(codon_files):
+        raise AssertionError(f"Alignment manifest rows {manifest_rows} != codon alignment files {len(codon_files)}")
+    if int(summary.get("passed", manifest_rows)) != manifest_rows:
+        raise AssertionError(f"Alignment summary passed {summary.get('passed')} != manifest rows {manifest_rows}")
     return {
-        "summary": json.loads(summary.read_text()),
-        "matrix_summary": json.loads(matrix_summary.read_text()),
+        "status": "pass",
+        "manifest_rows": manifest_rows,
+        "codon_alignment_files": len(codon_files),
+        "failed_rows": failed_rows,
+        "summary_passed": int(summary.get("passed", manifest_rows)),
     }
+
+
+def verify_variants(variant_dir: Optional[Path]) -> dict:
+    """Verify optional variant-call outputs when requested."""
+    if variant_dir is None:
+        return {"status": "skipped"}
+    require_file(variant_dir / "summary.json", "variant summary")
+    require_file(variant_dir / "manifest.tsv", "variant manifest")
+    summary = json.loads((variant_dir / "summary.json").read_text())
+    manifest_rows = count_data_rows(variant_dir / "manifest.tsv")
+    if summary.get("status") != "pass" or int(summary.get("families_failed", 0)) != 0:
+        raise AssertionError(
+            f"Variant failures are present: status={summary.get('status')}, "
+            f"families_failed={summary.get('families_failed')}"
+        )
+    if int(summary.get("families_processed", manifest_rows)) != manifest_rows:
+        raise AssertionError(f"Variant summary families_processed {summary.get('families_processed')} != manifest rows {manifest_rows}")
+    bed_paths = manifest_bed_paths(variant_dir)
+    if not bed_paths and (variant_dir / "bed").exists():
+        bed_paths = [
+            path.resolve()
+            for path in (variant_dir / "bed").glob("*.bed")
+            if not path.name.startswith("._") and path.name != "merged.bed"
+        ]
+    bed_rows = sum(count_bed_rows(path) for path in bed_paths)
+    if int(summary.get("bed_rows", bed_rows)) != bed_rows:
+        raise AssertionError(f"Variant summary bed_rows {summary.get('bed_rows')} != per-gene BED rows {bed_rows}")
+    merged_bed_path = summary.get("merged_bed_path")
+    if merged_bed_path:
+        merged_path = (variant_dir / merged_bed_path).resolve()
+        merged_rows = count_bed_rows(merged_path)
+        if int(summary.get("merged_bed_rows", merged_rows)) != merged_rows:
+            raise AssertionError(
+                f"Variant summary merged_bed_rows {summary.get('merged_bed_rows')} != merged BED rows {merged_rows}"
+            )
+        if merged_rows != bed_rows:
+            raise AssertionError(f"Merged BED rows {merged_rows} != per-gene BED rows {bed_rows}")
+    else:
+        merged_rows = 0
+    return {
+        "status": "pass",
+        "manifest_rows": manifest_rows,
+        "families_processed": int(summary.get("families_processed", manifest_rows)),
+        "bed_rows": bed_rows,
+        "merged_bed_rows": merged_rows,
+    }
+
+
+def resolve_verify_subdir(value: Optional[str], output_root: Path) -> Optional[Path]:
+    if not value:
+        return None
+    path = Path(value)
+    return path.resolve() if path.is_absolute() else (output_root / path).resolve()
 
 
 def cmd_verify(args: argparse.Namespace) -> None:
@@ -743,13 +874,23 @@ def cmd_verify(args: argparse.Namespace) -> None:
     verify_python_sources()
     fasta_stats = verify_fastas(full=args.full, output_root=output_root, species_manifest=species_manifest)
     matrix_stats = verify_matrices(mode=args.matrix_rows, output_root=output_root)
-    report_stats = verify_required_reports(output_root)
+    report_stats = verify_required_reports(output_root, require_matrices=args.matrix_rows != "none")
+    alignment_dir = resolve_verify_subdir(args.alignment_dir, output_root)
+    variant_dir = resolve_verify_subdir(args.variant_dir, output_root)
+    alignment_stats = verify_alignments(alignment_dir)
+    variant_stats = verify_variants(variant_dir)
     result = {
         "status": "pass",
         "fastas": fasta_stats,
         "matrices": matrix_stats,
+        "alignments": alignment_stats,
+        "variants": variant_stats,
         "summary_fastas": report_stats["summary"].get("fastas", {}),
-        "summary_matrix_files": report_stats["matrix_summary"].get("matrix_files"),
+        "summary_matrix_files": (
+            report_stats["matrix_summary"].get("matrix_files")
+            if report_stats["matrix_summary"]
+            else None
+        ),
     }
     print(json.dumps(result, indent=2, sort_keys=True))
 
@@ -768,8 +909,9 @@ def cmd_summary(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="refseq2cds",
-        description="Assembly-exact NCBI RefSeq singleton ortholog CDS FASTA and human CDS-position matrix builder.",
+        description="Assembly-exact RefSeq ortholog CDS FASTA, coordinate matrix, codon alignment, and variant workflow.",
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {VERSION}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("init-manifest", help="Write the default 14-species manifest")
@@ -789,8 +931,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("download-tools", help="Download NCBI Datasets CLI binaries into ./bin")
     p.set_defaults(func=lambda _args: download_datasets_cli())
 
-    p = sub.add_parser("run", help="Run the CDS pipeline")
-    p.add_argument("--steps", default="all", help="Pipeline steps, comma-separated, or all")
+    p = sub.add_parser("run", help="Build assembly-exact ortholog CDS FASTA files and optional human matrices")
+    p.add_argument("--steps", default="all", help="Pipeline stages to run, comma-separated, or all")
     p.add_argument(
         "--orthology-mode",
         choices=["strict_singleton", "reference_gene_1to1_present_species"],
@@ -811,8 +953,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--manifest",
         help="Species manifest TSV; defaults to ./config/species_manifest.tsv if present, otherwise the packaged default manifest",
     )
-    p.add_argument("--input-root", help="Input root containing ncbi_bulk/ and assembly_packages/")
-    p.add_argument("--output-root", help="Output root for generated pipeline outputs")
+    p.add_argument("--input-root", help="Input root containing reusable ncbi_bulk/ and assembly_packages/")
+    p.add_argument("--output-root", help="Run output root for indexes, FASTA files, reports, and matrices")
     p.add_argument("--datasets", default="datasets", help="NCBI Datasets CLI executable")
     p.add_argument("--offline", action="store_true", help="Use local input-root fixtures; do not download NCBI data")
     p.add_argument("--force", action="store_true")
@@ -830,18 +972,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_build_matrices)
 
-    p = sub.add_parser("align", help="Build tree-free codon alignments")
+    p = sub.add_parser("align", help="Build MAFFT+PAL2NAL codon alignments from fastas/")
     p.add_argument(
         "--mode",
         choices=["mafft-pal2nal"],
         default="mafft-pal2nal",
         help="Alignment backend (default: mafft-pal2nal)",
     )
-    p.add_argument("--input-dir", default=str(Path.cwd() / "fastas"), help="Directory containing refseq2cds FASTA files")
+    p.add_argument("--input-dir", default=str(Path.cwd() / "fastas"), help="Input FASTA directory from `refseq2cds run`")
     p.add_argument(
         "--output-dir",
         default=str(Path.cwd() / "alignments" / "mafft_pal2nal"),
-        help="Alignment output directory",
+        help="Alignment output directory consumed by `refseq2cds variants`",
     )
     p.add_argument("--mafft", default="mafft", help="MAFFT executable path or command name")
     p.add_argument("--pal2nal", default="pal2nal.pl", help="PAL2NAL executable path or command name")
@@ -857,15 +999,15 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--jobs", type=int, default=1, help="Number of families to align concurrently")
     p.add_argument("--limit", type=int, help="Only process the first N selected FASTA files")
     p.add_argument("--symbols", nargs="*", help="Only process selected symbols/stems; comma-separated values are accepted")
-    p.add_argument("--map-token", action="append", default=[], help="Write alignment-to-CDS codon map for this token")
+    p.add_argument("--map-token", action="append", default=[], help="Write alignment-to-CDS codon map for this token; required for later BED mapping")
     p.add_argument("--codon-table", choices=["universal", "vmitochondria"], default="universal")
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_align)
 
-    p = sub.add_parser("variants", help="Call target-specific coding events and map coordinateable events to BED")
+    p = sub.add_parser("variants", help="Call target-specific amino acid variants and map coordinateable variants to BED")
     p.add_argument(
         "--alignment-dir",
-        default=str(Path.cwd() / "alignments" / "final"),
+        default=str(Path.cwd() / "alignments" / "mafft_pal2nal"),
         help="Directory containing codon-aware alignments, or an aligner output directory with a codon/ subdirectory",
     )
     p.add_argument(
@@ -886,10 +1028,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--outgroup-tokens-file", help="File containing outgroup tokens")
     p.add_argument("--exclude-token", action="append", default=[], help="Token excluded from event calling")
     p.add_argument("--exclude-tokens-file", help="File containing excluded tokens")
-    p.add_argument("--target-state-mode", choices=["uniform", "allow-diverse"], default="uniform")
-    p.add_argument("--min-target-non-gap", default="all")
+    p.add_argument("--target-state-mode", choices=["uniform", "allow-diverse"], default="uniform", help="Deprecated compatibility option; v0.1.5 reports identical/divergent target states automatically")
+    p.add_argument("--min-target-non-gap", default="all", help="Deprecated alias for --min-target-informative")
+    p.add_argument("--min-target-informative", help="Minimum informative target states; valid codons and full codon gaps are informative")
     p.add_argument("--max-target-gap-fraction-for-substitution", type=float, default=0.0)
-    p.add_argument("--min-background-non-gap", type=int, default=5)
+    p.add_argument("--min-background-non-gap", type=int, default=5, help="Deprecated alias for --min-background-informative")
+    p.add_argument("--min-background-informative", help="Minimum informative background states; valid codons and full codon gaps are informative")
     p.add_argument("--min-background-gap-fraction-for-target-non-gap-event", type=float, default=0.8)
     p.add_argument("--min-background-non-gap-fraction-for-target-gap-event", type=float, default=0.8)
     p.add_argument("--min-target-non-gap-fraction", type=float, default=1.0)
@@ -902,19 +1046,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_variants)
 
-    p = sub.add_parser("verify", help="Verify code and generated outputs")
+    p = sub.add_parser("verify", help="Verify code plus run, matrix, alignment, and variant outputs")
     p.add_argument(
         "--manifest",
         help="Species manifest TSV used to check FASTA headers; defaults to ./config/species_manifest.tsv if present",
     )
-    p.add_argument("--output-root", help="Output root containing fastas/, reports/, and matrices; defaults to current directory")
+    p.add_argument("--output-root", help="Run output root containing fastas/, reports/, and optional matrices; defaults to current directory")
     p.add_argument("--full", action="store_true", help="Check every FASTA instead of a 200-file sample")
     p.add_argument(
         "--matrix-rows",
         choices=["none", "sample", "full"],
         default="sample",
-        help="How deeply to count gzip matrix rows",
+        help="Matrix verification depth: none skips matrices, sample checks selected genes, full reads every matrix",
     )
+    p.add_argument("--alignment-dir", help="Optional align output directory to verify; relative paths are resolved under --output-root")
+    p.add_argument("--variant-dir", help="Optional variants output directory to verify; relative paths are resolved under --output-root")
     p.set_defaults(func=cmd_verify)
 
     p = sub.add_parser("summary", help="Print generated summary JSON files")
