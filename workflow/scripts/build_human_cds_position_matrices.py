@@ -215,6 +215,62 @@ def parse_human_cds_features(gff_path: Path) -> Dict[Tuple[int, str, str], List[
     return by_key
 
 
+def choose_single_contig(by_key, seqid_info, expected_len=None, log_fn=None):
+    """Keep one contig per (gene, transcript, protein) and drop the other copies.
+
+    hg38 RefSeq annotates a transcript that overlaps an alt locus on BOTH the primary
+    chromosome and the alt/patch scaffold. Those are two independent alignments of the same
+    transcript, and the alt copy is usually truncated. Because the features were grouped by
+    (gene, transcript, protein) only, and ordered_features() sorts by seqid first, the two
+    alignments were silently concatenated into one transcript: RBFOX2 got CDS positions
+    1-1160 from chr22_KI270876v1_alt (the alt copy's entire 1,160 nt) and 1161-1341 from
+    chr22, so no codon boundary in the result means what it says.
+
+    Preference, in order:
+      1. contigs whose CDS covers at least the selected transcript's CDS length
+      2. Primary Assembly over ALT_REF_LOCI_* / PATCHES / non-nuclear
+      3. more CDS bases covered
+      4. lexically smallest seqid, so the choice is deterministic
+
+    Sufficiency comes first because the aim is one coherent COMPLETE CDS, and write_matrix
+    rejects a contig that supplies fewer positions than the selected CDS length. Among the
+    contigs that suffice, the primary chromosome wins.
+
+    Neither simpler rule works alone. Preferring primary unconditionally loses RFLNB and RYBP,
+    whose primary annotation is shorter than the selected CDS while their fix scaffold carries a
+    complete copy. Preferring coverage unconditionally loses ALMS1, CASP8AP2, FOXO6, MUC2 and
+    SHANK3 the other way: their primary annotation already meets the expected length, but the
+    patch copy carries extra CDS features and wins on raw coverage, which would move a
+    well-placed gene onto a scaffold that no primary-assembly analysis can reach.
+    """
+    def rank(seqid, feats, need):
+        unit = (seqid_info.get(seqid) or {}).get("assembly_unit", "")
+        primary = 0 if unit == "Primary Assembly" else 1
+        covered = sum(f.end - f.start + 1 for f in feats)
+        insufficient = 0 if (need is None or covered >= need) else 1
+        return (insufficient, primary, -covered, seqid)
+
+    dropped = 0
+    for key, feats in list(by_key.items()):
+        groups = defaultdict(list)
+        for f in feats:
+            groups[f.seqid].append(f)
+        if len(groups) < 2:
+            continue
+        need = None
+        if expected_len:
+            need = expected_len.get((key[1], key[2])) or expected_len.get(key[1])
+        keep = min(groups, key=lambda s: rank(s, groups[s], need))
+        dropped += 1
+        if log_fn:
+            others = ", ".join(
+                f"{s}({sum(x.end - x.start + 1 for x in g)}nt)"
+                for s, g in sorted(groups.items()) if s != keep)
+            log_fn(f"  multi-contig {key[1]}: keep {keep}"
+                   f"({sum(x.end - x.start + 1 for x in groups[keep])}nt), drop {others}")
+        by_key[key] = groups[keep]
+    return dropped
+
 def ordered_features(features: List[CdsFeature]) -> List[CdsFeature]:
     if not features:
         return []
@@ -396,6 +452,13 @@ def main() -> None:
         (selected["token"] == human_token)
         & (selected["family_cds_qc_passed"] == True)
     ].copy()
+    expected_len = {
+        (r["transcript_accession"], r["protein_accession"]): int(r["cds_length_normalized"])
+        for _, r in selected.iterrows()
+    }
+    n_multi = choose_single_contig(cds_features, seqid_info, expected_len, log)
+    log(f"Resolved {n_multi:,} transcript(s) annotated on more than one contig "
+        f"(sufficient CDS length first, then Primary Assembly)")
     fasta_manifest = pd.read_csv(FASTA_MANIFEST, sep="\t")
     fasta_by_family = fasta_manifest.set_index("family_id")["fasta_path"].to_dict()
     selected = selected[selected["family_id"].isin(fasta_by_family)].copy()
