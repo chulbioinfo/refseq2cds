@@ -580,7 +580,19 @@ def fasta_lengths_and_headers(path: Optional[Path]) -> Tuple[Dict[str, int], Dic
             identifiers.add(prot)
         if tx:
             identifiers.add(tx)
+        is_partial = "partial" in rec.description.lower()
+        primary = rec.id.startswith("lcl|NC_") or "|NC_" in rec.id
         for ident in identifiers:
+            if ident in sequences:
+                prev_desc = headers.get(ident, "")
+                prev_partial = "partial" in prev_desc.lower()
+                prev_primary = "|NC_" in prev_desc or prev_desc.startswith("NC_")
+                # keep the better record: complete beats partial, primary
+                # assembly beats alt/patch scaffold, then longer wins
+                better = ((not is_partial, primary, len(seq))
+                          > (not prev_partial, prev_primary, lengths.get(ident, 0)))
+                if not better:
+                    continue
             lengths[ident] = len(seq)
             headers[ident] = rec.description
             sequences[ident] = seq
@@ -783,7 +795,7 @@ def parse_gff3(
         if key not in dedup:
             dedup[key] = row
         else:
-            dedup[key]["is_partial"] = bool(dedup[key]["is_partial"] or row["is_partial"])
+            dedup[key]["is_partial"] = bool(dedup[key]["is_partial"] and row["is_partial"])
             if not dedup[key].get("select_category") and row.get("select_category"):
                 dedup[key]["select_category"] = row["select_category"]
     return gene_rows, transcript_rows, list(dedup.values())
